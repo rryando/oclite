@@ -1454,14 +1454,69 @@ function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; las
       <For each={props.parts}>
         {(part, index) => {
           const component = createMemo(() => PART_MAPPING[part.type as keyof typeof PART_MAPPING])
+          const toolPart = createMemo(() => (part.type === "tool" ? (part as import("@/session/message-v2").ToolPart) : undefined))
+          const statusIcon = createMemo(() => {
+            const tp = toolPart()
+            if (!tp) return ""
+            if (tp.state.status === "completed") return "✓"
+            if (tp.state.status === "error") return "✗"
+            return "◌"
+          })
+          const statusColor = createMemo(() => {
+            const tp = toolPart()
+            if (!tp) return theme.textMuted
+            if (tp.state.status === "completed") return theme.success
+            if (tp.state.status === "error") return theme.error
+            return theme.textMuted
+          })
+          const isRunning = createMemo(() => {
+            const tp = toolPart()
+            return tp ? tp.state.status === "running" || tp.state.status === "pending" : false
+          })
           return (
             <Show when={component()}>
-              <Dynamic
-                last={index() === props.parts.length - 1}
-                component={component()}
-                part={part as any}
-                message={props.message}
-              />
+              <Show
+                when={toolPart()}
+                fallback={
+                  <Dynamic
+                    last={index() === props.parts.length - 1}
+                    component={component()}
+                    part={part as any}
+                    message={props.message}
+                  />
+                }
+              >
+                <box
+                  marginTop={1}
+                  border={["left"]}
+                  paddingLeft={2}
+                  customBorderChars={SplitBorder.customBorderChars}
+                  borderColor={theme.borderSubtle}
+                  flexDirection="column"
+                >
+                  <box paddingBottom={1}>
+                    <Switch>
+                      <Match when={isRunning()}>
+                        <Spinner color={theme.textMuted}>
+                          <span style={{ fg: theme.textMuted }}>{toolPart()!.tool}</span>
+                        </Spinner>
+                      </Match>
+                      <Match when={true}>
+                        <text>
+                          <span style={{ fg: statusColor() }}>{statusIcon()} </span>
+                          <span style={{ fg: theme.textMuted }}>{toolPart()!.tool}</span>
+                        </text>
+                      </Match>
+                    </Switch>
+                  </box>
+                  <Dynamic
+                    last={index() === props.parts.length - 1}
+                    component={component()}
+                    part={part as any}
+                    message={props.message}
+                  />
+                </box>
+              </Show>
             </Show>
           )
         }}
