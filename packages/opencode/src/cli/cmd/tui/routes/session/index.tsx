@@ -1486,36 +1486,27 @@ function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; las
                   />
                 }
               >
-                <box
-                  marginTop={1}
-                  border={["left"]}
-                  paddingLeft={2}
-                  customBorderChars={SplitBorder.customBorderChars}
-                  borderColor={theme.borderSubtle}
-                  flexDirection="column"
-                >
-                  <box paddingBottom={1}>
-                    <Switch>
-                      <Match when={isRunning()}>
-                        <Spinner color={theme.textMuted}>
-                          <span style={{ fg: theme.textMuted }}>{toolPart()!.tool}</span>
-                        </Spinner>
-                      </Match>
-                      <Match when={true}>
-                        <text>
-                          <span style={{ fg: statusColor() }}>{statusIcon()} </span>
-                          <span style={{ fg: theme.textMuted }}>{toolPart()!.tool}</span>
-                        </text>
-                      </Match>
-                    </Switch>
-                  </box>
+                <>
+                  <Switch>
+                    <Match when={isRunning()}>
+                      <Spinner color={theme.textMuted}>
+                        <span style={{ fg: theme.textMuted }}>{toolPart()!.tool}</span>
+                      </Spinner>
+                    </Match>
+                    <Match when={true}>
+                      <text>
+                        <span style={{ fg: statusColor() }}>{statusIcon()} </span>
+                        <span style={{ fg: theme.textMuted }}>{toolPart()!.tool}</span>
+                      </text>
+                    </Match>
+                  </Switch>
                   <Dynamic
                     last={index() === props.parts.length - 1}
                     component={component()}
                     part={part as any}
                     message={props.message}
                   />
-                </box>
+                </>
               </Show>
             </Show>
           )
