@@ -1,2 +1,4 @@
 #!/usr/bin/env bash
-exec bun run --conditions=browser "$(dirname "$(realpath "$0")")/../src/index.ts" "$@"
+SCRIPT_DIR="$(dirname "$(realpath "$0")")"
+PACKAGE_DIR="$(dirname "$SCRIPT_DIR")"
+exec bun run --conditions=browser --cwd "$PACKAGE_DIR" "$PACKAGE_DIR/src/index.ts" "$@"
