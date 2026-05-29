@@ -1996,51 +1996,145 @@ function parseJsonOutput(raw: string): Record<string, unknown> | undefined {
 function JsonSummary(props: { data: Record<string, unknown> }) {
   const { theme } = useTheme()
 
-  const rows = createMemo(() => {
-    const entries: { key: string; value: string; isStatus: boolean }[] = []
-    for (const [k, v] of Object.entries(props.data)) {
+  type Row =
+    | { kind: "ok"; success: boolean }
+    | { kind: "field"; key: string; value: string; valueKind: "string" | "number" | "boolean" | "null" | "status" }
+    | { kind: "sub"; key: string; value: string; valueKind: "string" | "number" | "boolean" | "null" }
+    | { kind: "array-item"; key: string; value: string }
+
+  const rows = createMemo((): Row[] => {
+    const result: Row[] = []
+    const data = props.data
+
+    if ("ok" in data) result.push({ kind: "ok", success: data["ok"] !== false })
+
+    const fieldEntries: { key: string; raw: unknown }[] = []
+    for (const [k, v] of Object.entries(data)) {
       if (k === "ok") continue
-      if (v !== null && typeof v === "object" && !Array.isArray(v)) {
-        for (const [nk, nv] of Object.entries(v as Record<string, unknown>))
-          entries.push({ key: nk, value: String(nv), isStatus: false })
-      } else {
-        entries.push({ key: k, value: String(v), isStatus: false })
-      }
+      fieldEntries.push({ key: k, raw: v })
     }
 
-    const prevIdx = entries.findIndex((e) => /previous.*status/i.test(e.key))
-    const nextIdx = entries.findIndex((e) => /new.*status/i.test(e.key))
+    // Detect previousStatus/newStatus pair — merge before rendering
+    const prevIdx = fieldEntries.findIndex((e) => /previous.*status/i.test(e.key))
+    const nextIdx = fieldEntries.findIndex((e) => /new.*status/i.test(e.key))
     if (prevIdx !== -1 && nextIdx !== -1) {
-      const transition = `${entries[prevIdx].value} → ${entries[nextIdx].value}`
+      const transition = `${fieldEntries[prevIdx].raw} → ${fieldEntries[nextIdx].raw}`
       const lo = Math.min(prevIdx, nextIdx)
       const hi = Math.max(prevIdx, nextIdx)
-      entries.splice(hi, 1)
-      entries.splice(lo, 1, { key: "status", value: transition, isStatus: true })
+      fieldEntries.splice(hi, 1)
+      fieldEntries.splice(lo, 1, { key: "status", raw: transition })
     }
 
-    return entries
+    for (const { key, raw } of fieldEntries) {
+      // Check if this was a merged status transition
+      const isStatus = key === "status" && typeof raw === "string" && raw.includes(" → ")
+
+      if (isStatus) {
+        result.push({ kind: "field", key, value: raw as string, valueKind: "status" })
+        continue
+      }
+
+      if (raw === null || raw === undefined) {
+        result.push({ kind: "field", key, value: "null", valueKind: "null" })
+        continue
+      }
+
+      if (Array.isArray(raw)) {
+        if (raw.length === 0) {
+          result.push({ kind: "field", key, value: "[]", valueKind: "null" })
+          continue
+        }
+        if (typeof raw[0] === "object" && raw[0] !== null) {
+          // Array of objects — render each item's first string value
+          result.push({ kind: "field", key, value: `[${raw.length}]`, valueKind: "null" })
+          for (const item of raw) {
+            if (item !== null && typeof item === "object") {
+              const firstStr = Object.values(item as Record<string, unknown>).find((v) => typeof v === "string")
+              result.push({ kind: "array-item", key: "•", value: String(firstStr ?? JSON.stringify(item)) })
+            }
+          }
+        } else {
+          // Array of primitives
+          result.push({ kind: "field", key, value: raw.join(", "), valueKind: "string" })
+        }
+        continue
+      }
+
+      if (typeof raw === "object") {
+        // Nested object — show key with no value, then sub-rows
+        result.push({ kind: "field", key, value: "", valueKind: "null" })
+        for (const [nk, nv] of Object.entries(raw as Record<string, unknown>)) {
+          const nKind: "string" | "number" | "boolean" | "null" =
+            nv === null ? "null"
+            : typeof nv === "number" ? "number"
+            : typeof nv === "boolean" ? "boolean"
+            : "string"
+          const nStr =
+            nv === null || nv === undefined ? "null"
+            : typeof nv === "object" ? JSON.stringify(nv)
+            : String(nv)
+          result.push({ kind: "sub", key: nk, value: nStr, valueKind: nKind })
+        }
+        continue
+      }
+
+      const valueKind: "string" | "number" | "boolean" =
+        typeof raw === "number" ? "number"
+        : typeof raw === "boolean" ? "boolean"
+        : "string"
+      result.push({ kind: "field", key, value: String(raw), valueKind })
+    }
+
+    return result
   })
 
-  const ok = createMemo(() => props.data["ok"])
-  const hasOk = createMemo(() => "ok" in props.data)
-  const icon = createMemo(() => (ok() === false ? "✗" : "✓"))
-  const iconColor = createMemo(() => (ok() === false ? theme.error : theme.success))
-
   return (
-    <box gap={1} paddingLeft={1}>
-      <Show when={hasOk()}>
-        <box flexDirection="row" gap={2}>
-          <text fg={iconColor()}>{icon()}</text>
-          <text fg={theme.textMuted}>ok</text>
-        </box>
-      </Show>
+    <box>
       <For each={rows()}>
-        {(row) => (
-          <box flexDirection="row" paddingLeft={3}>
-            <text fg={theme.textMuted} width={20}>{row.key}</text>
-            <text fg={row.isStatus ? theme.info : theme.text}>{row.value}</text>
-          </box>
-        )}
+        {(row) => {
+          if (row.kind === "ok")
+            return (
+              <box flexDirection="row" gap={2}>
+                <text fg={row.success ? theme.success : theme.error}>{row.success ? "✓" : "✗"}</text>
+                <text fg={theme.textMuted}>ok</text>
+              </box>
+            )
+
+          if (row.kind === "array-item")
+            return (
+              <box flexDirection="row" paddingLeft={4}>
+                <text fg={theme.textMuted}>{"• "}</text>
+                <text fg={theme.syntaxString}>{row.value}</text>
+              </box>
+            )
+
+          if (row.kind === "sub")
+            return (
+              <box flexDirection="row" paddingLeft={4}>
+                <text fg={theme.textMuted} width={18}>{row.key}</text>
+                <text fg={
+                  row.valueKind === "number" ? theme.syntaxNumber
+                  : row.valueKind === "boolean" ? theme.syntaxKeyword
+                  : row.valueKind === "null" ? theme.textMuted
+                  : theme.syntaxString
+                }>{row.value}</text>
+              </box>
+            )
+
+          // kind === "field"
+          return (
+            <box flexDirection="row" paddingLeft={2}>
+              <text fg={theme.textMuted} width={20}>{row.key}</text>
+              <text fg={
+                row.valueKind === "status" ? theme.info
+                : row.valueKind === "number" ? theme.syntaxNumber
+                : row.valueKind === "boolean" ? theme.syntaxKeyword
+                : row.valueKind === "null" ? theme.textMuted
+                : theme.syntaxString
+              }>{row.value}</text>
+            </box>
+          )
+        }}
       </For>
     </box>
   )
