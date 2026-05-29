@@ -22,6 +22,11 @@ export function Footer() {
     if (route.data.type !== "session") return undefined
     return sync.data.session_status?.[route.data.sessionID]
   })
+  const subagents = createMemo(() => {
+    const data = route.data
+    if (data.type !== "session") return []
+    return sync.data.session.filter((x) => x.parentID === data.sessionID)
+  })
   const directory = useDirectory()
   const connected = useConnected()
 
@@ -88,6 +93,12 @@ export function Footer() {
                   </Match>
                 </Switch>
                 {mcp()} MCP
+              </text>
+            </Show>
+            <Show when={subagents().length > 0}>
+              <text fg={theme.text}>
+                <span style={{ fg: theme.success }}>⊙ </span>
+                {subagents().length} subagents
               </text>
             </Show>
             <text fg={theme.textMuted}>/status</text>
