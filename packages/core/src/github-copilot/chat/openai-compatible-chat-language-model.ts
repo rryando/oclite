@@ -26,17 +26,17 @@ import { convertToOpenAICompatibleChatMessages } from "./convert-to-openai-compa
 import { getResponseMetadata } from "./get-response-metadata"
 import { mapOpenAICompatibleFinishReason } from "./map-openai-compatible-finish-reason"
 import { type OpenAICompatibleChatModelId, openaiCompatibleProviderOptions } from "./openai-compatible-chat-options"
-import { defaultOpenAICompatibleErrorStructure, type ProviderErrorStructure } from "../openai-compatible-error"
+import { defaultOpenAICompatibleErrorStructure, type OpenAICompatibleErrorData, type ProviderErrorStructure } from "../openai-compatible-error"
 import type { MetadataExtractor } from "./openai-compatible-metadata-extractor"
 import { prepareTools } from "./openai-compatible-prepare-tools"
 
-export type OpenAICompatibleChatConfig = {
+export type OpenAICompatibleChatConfig<ERROR extends object = OpenAICompatibleErrorData> = {
   provider: string
   headers: () => Record<string, string | undefined>
   url: (options: { modelId: string; path: string }) => string
   fetch?: FetchFunction
   includeUsage?: boolean
-  errorStructure?: ProviderErrorStructure<any>
+  errorStructure?: ProviderErrorStructure<ERROR>
   metadataExtractor?: MetadataExtractor
 
   /**
@@ -50,23 +50,23 @@ export type OpenAICompatibleChatConfig = {
   supportedUrls?: () => LanguageModelV3["supportedUrls"]
 }
 
-export class OpenAICompatibleChatLanguageModel implements LanguageModelV3 {
+export class OpenAICompatibleChatLanguageModel<ERROR extends object = OpenAICompatibleErrorData> implements LanguageModelV3 {
   readonly specificationVersion = "v3"
 
   readonly supportsStructuredOutputs: boolean
 
   readonly modelId: OpenAICompatibleChatModelId
-  private readonly config: OpenAICompatibleChatConfig
+  private readonly config: OpenAICompatibleChatConfig<ERROR>
   private readonly failedResponseHandler: ResponseHandler<APICallError>
-  private readonly chunkSchema // type inferred via constructor
+  private readonly chunkSchema: ReturnType<typeof createOpenAICompatibleChatChunkSchema<z.ZodType<ERROR>>>
 
-  constructor(modelId: OpenAICompatibleChatModelId, config: OpenAICompatibleChatConfig) {
+  constructor(modelId: OpenAICompatibleChatModelId, config: OpenAICompatibleChatConfig<ERROR>) {
     this.modelId = modelId
     this.config = config
 
     // initialize error handling:
-    const errorStructure = config.errorStructure ?? defaultOpenAICompatibleErrorStructure
-    this.chunkSchema = createOpenAICompatibleChatChunkSchema(errorStructure.errorSchema)
+    const errorStructure = (config.errorStructure ?? defaultOpenAICompatibleErrorStructure) as ProviderErrorStructure<ERROR>
+    this.chunkSchema = createOpenAICompatibleChatChunkSchema(errorStructure.errorSchema as z.ZodType<ERROR>)
     this.failedResponseHandler = createJsonErrorResponseHandler(errorStructure)
 
     this.supportsStructuredOutputs = config.supportsStructuredOutputs ?? false
@@ -383,7 +383,6 @@ export class OpenAICompatibleChatLanguageModel implements LanguageModelV3 {
             controller.enqueue({ type: "stream-start", warnings })
           },
 
-          // TODO we lost type safety on Chunk, most likely due to the error schema. MUST FIX
           transform(chunk, controller) {
             // Emit raw chunk if requested (before anything else)
             if (options.includeRawChunks) {
@@ -409,27 +408,30 @@ export class OpenAICompatibleChatLanguageModel implements LanguageModelV3 {
                 unified: "error",
                 raw: undefined,
               }
-              controller.enqueue({ type: "error", error: value.error.message })
+              controller.enqueue({ type: "error", error: (value as { error: { message: string } }).error.message })
               return
             }
+
+            // After the "error" guard, value is the non-error chunk branch
+            const chunkValue = value as Exclude<typeof value, ERROR>
 
             if (isFirstChunk) {
               isFirstChunk = false
 
               controller.enqueue({
                 type: "response-metadata",
-                ...getResponseMetadata(value),
+                ...getResponseMetadata(chunkValue),
               })
             }
 
-            if (value.usage != null) {
+            if (chunkValue.usage != null) {
               const {
                 prompt_tokens,
                 completion_tokens,
                 total_tokens,
                 prompt_tokens_details,
                 completion_tokens_details,
-              } = value.usage
+              } = chunkValue.usage
 
               usage.promptTokens = prompt_tokens ?? undefined
               usage.completionTokens = completion_tokens ?? undefined
@@ -450,7 +452,7 @@ export class OpenAICompatibleChatLanguageModel implements LanguageModelV3 {
               }
             }
 
-            const choice = value.choices[0]
+            const choice = chunkValue.choices[0]
 
             if (choice?.finish_reason != null) {
               finishReason = {

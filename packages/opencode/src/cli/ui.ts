@@ -3,8 +3,7 @@ import { Schema } from "effect"
 import { logo as glyphs } from "./logo"
 
 const wordmark = [
-  `⠀               ▄▄           `,
-  `█▀▀█ █▀▀▀ █    ▀██▀ ████ █▀▀█`,
+  `█▀▀█ █▀▀▀ █    ████ ████ █▀▀█`,
   `█  █ █    █     ██   ██  █▀▀▀`,
   `▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀  ▀▀  ▀▀▀▀`,
 ]
