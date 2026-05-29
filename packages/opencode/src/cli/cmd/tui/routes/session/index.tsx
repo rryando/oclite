@@ -1489,27 +1489,25 @@ function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; las
                 <>
                   <Switch>
                     <Match when={isRunning()}>
-                      <box marginTop={2}>
+                      <box marginTop={1}>
                         <Spinner color={theme.textMuted}>
                           <span style={{ fg: theme.textMuted }}>{toolPart()!.tool}</span>
                         </Spinner>
                       </box>
                     </Match>
                     <Match when={true}>
-                      <text marginTop={2}>
+                      <text marginTop={1}>
                         <span style={{ fg: statusColor() }}>{statusIcon()} </span>
                         <span style={{ fg: theme.textMuted }}>{toolPart()!.tool}</span>
                       </text>
                     </Match>
                   </Switch>
-                  <box marginBottom={1}>
-                    <Dynamic
-                      last={index() === props.parts.length - 1}
-                      component={component()}
-                      part={part as any}
-                      message={props.message}
-                    />
-                  </box>
+                  <Dynamic
+                    last={index() === props.parts.length - 1}
+                    component={component()}
+                    part={part as any}
+                    message={props.message}
+                  />
                 </>
               </Show>
             </Show>
