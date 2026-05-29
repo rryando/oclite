@@ -1357,7 +1357,7 @@ function UserMessage(props: {
         <box
           id={props.message.id}
           border={["left"]}
-          borderColor={color()}
+          borderColor={theme.accent}
           customBorderChars={SplitBorder.customBorderChars}
           marginTop={props.index === 0 ? 0 : 1}
         >
