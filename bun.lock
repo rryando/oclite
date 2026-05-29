@@ -424,6 +424,7 @@
       "version": "1.15.12",
       "bin": {
         "opencode": "./bin/opencode",
+        "oclite": "./bin/oclite",
       },
       "dependencies": {
         "@actions/core": "1.11.1",
