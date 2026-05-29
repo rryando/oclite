@@ -64,7 +64,7 @@ export function webSearchEnabled(providerID: ProviderID, flags = { exa: false, p
 // Extended tools (webfetch, websearch, repo_clone, repo_overview, lsp, plan, question)
 // are excluded to reduce token overhead.
 const CORE_TOOL_IDS = new Set([
-  "shell",
+  "bash",
   "read",
   "glob",
   "grep",
