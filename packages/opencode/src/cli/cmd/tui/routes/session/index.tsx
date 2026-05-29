@@ -1933,6 +1933,7 @@ function Shell(props: ToolProps<typeof ShellTool>) {
     if (expanded() || !collapsed().overflow) return output()
     return collapsed().output
   })
+  const jsonData = createMemo(() => (output() ? parseJsonOutput(output()) : undefined))
 
   const workdirDisplay = createMemo(() => {
     const workdir = props.input.workdir
@@ -1955,14 +1956,21 @@ function Shell(props: ToolProps<typeof ShellTool>) {
           title={title()}
           part={props.part}
           spinner={isRunning()}
-          onClick={collapsed().overflow ? () => setExpanded((prev) => !prev) : undefined}
+          onClick={!jsonData() && collapsed().overflow ? () => setExpanded((prev) => !prev) : undefined}
         >
           <box gap={1}>
             <text fg={theme.text}>$ {props.input.command}</text>
             <Show when={output()}>
-              <text fg={theme.text}>{limited()}</text>
+              <Switch>
+                <Match when={jsonData()}>
+                  <JsonSummary data={jsonData()!} />
+                </Match>
+                <Match when={true}>
+                  <text fg={theme.text}>{limited()}</text>
+                </Match>
+              </Switch>
             </Show>
-            <Show when={collapsed().overflow}>
+            <Show when={!jsonData() && collapsed().overflow}>
               <text fg={theme.textMuted}>{expanded() ? "Click to collapse" : "Click to expand"}</text>
             </Show>
           </box>
@@ -1974,6 +1982,67 @@ function Shell(props: ToolProps<typeof ShellTool>) {
         </InlineTool>
       </Match>
     </Switch>
+  )
+}
+
+function parseJsonOutput(raw: string): Record<string, unknown> | undefined {
+  try {
+    const parsed = JSON.parse(raw)
+    if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed))
+      return parsed as Record<string, unknown>
+  } catch {}
+}
+
+function JsonSummary(props: { data: Record<string, unknown> }) {
+  const { theme } = useTheme()
+
+  const rows = createMemo(() => {
+    const entries: { key: string; value: string; isStatus: boolean }[] = []
+    for (const [k, v] of Object.entries(props.data)) {
+      if (k === "ok") continue
+      if (v !== null && typeof v === "object" && !Array.isArray(v)) {
+        for (const [nk, nv] of Object.entries(v as Record<string, unknown>))
+          entries.push({ key: nk, value: String(nv), isStatus: false })
+      } else {
+        entries.push({ key: k, value: String(v), isStatus: false })
+      }
+    }
+
+    const prevIdx = entries.findIndex((e) => /previous.*status/i.test(e.key))
+    const nextIdx = entries.findIndex((e) => /new.*status/i.test(e.key))
+    if (prevIdx !== -1 && nextIdx !== -1) {
+      const transition = `${entries[prevIdx].value} → ${entries[nextIdx].value}`
+      const lo = Math.min(prevIdx, nextIdx)
+      const hi = Math.max(prevIdx, nextIdx)
+      entries.splice(hi, 1)
+      entries.splice(lo, 1, { key: "status", value: transition, isStatus: true })
+    }
+
+    return entries
+  })
+
+  const ok = createMemo(() => props.data["ok"])
+  const hasOk = createMemo(() => "ok" in props.data)
+  const icon = createMemo(() => (ok() === false ? "✗" : "✓"))
+  const iconColor = createMemo(() => (ok() === false ? theme.error : theme.success))
+
+  return (
+    <box gap={1} paddingLeft={1}>
+      <Show when={hasOk()}>
+        <box flexDirection="row" gap={2}>
+          <text fg={iconColor()}>{icon()}</text>
+          <text fg={theme.textMuted}>ok</text>
+        </box>
+      </Show>
+      <For each={rows()}>
+        {(row) => (
+          <box flexDirection="row" paddingLeft={3}>
+            <text fg={theme.textMuted} width={20}>{row.key}</text>
+            <text fg={row.isStatus ? theme.info : theme.text}>{row.value}</text>
+          </box>
+        )}
+      </For>
+    </box>
   )
 }
 

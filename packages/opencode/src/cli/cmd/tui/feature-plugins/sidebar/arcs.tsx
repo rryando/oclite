@@ -11,6 +11,12 @@ interface ArcsTask {
   priority: string
 }
 
+interface ArcsPlan {
+  id: string
+  title: string
+  status: string
+}
+
 interface ArcsBrief {
   slug: string
   name: string
@@ -33,6 +39,7 @@ interface ArcsNext {
 interface ArcsData {
   brief: ArcsBrief
   tasks: ArcsTask[]
+  activePlan: ArcsPlan | null
   next: ArcsNext | null
 }
 
@@ -43,12 +50,22 @@ function spawnJson<T>(args: string[]): T | null {
   return parsed.ok ? (parsed.data as T) : null
 }
 
+const INACTIVE = new Set(["done", "cancelled"])
+
 function fetchArcs(): ArcsData | null {
   const brief = spawnJson<ArcsBrief>(["arcs", "brief", "--lean", "--json"])
   if (!brief) return null
-  const tasks = spawnJson<ArcsTask[]>(["arcs", "task", "list", brief.slug, "--lean", "--json"]) ?? brief.topOpenTasks
-  const next = spawnJson<ArcsNext>(["arcs", "next", brief.slug, "--lean", "--json"])
-  return { brief, tasks, next }
+
+  const plans = spawnJson<ArcsPlan[]>(["arcs", "plan", "list", brief.slug, "--lean", "--json"]) ?? []
+  const activePlan = plans.find((p) => p.status === "in_progress") ?? plans.find((p) => p.status === "planned") ?? null
+
+  const tasks = activePlan
+    ? (spawnJson<ArcsTask[]>(["arcs", "task", "list", brief.slug, `--planId=${activePlan.id}`, "--lean", "--json"]) ?? []).filter((t) => !INACTIVE.has(t.status))
+    : (spawnJson<ArcsTask[]>(["arcs", "task", "list", brief.slug, "--lean", "--json"]) ?? brief.topOpenTasks).filter((t) => !INACTIVE.has(t.status))
+
+  const nextRaw = spawnJson<ArcsNext>(["arcs", "next", brief.slug, "--lean", "--json"])
+  const next = nextRaw?.task ? nextRaw : null
+  return { brief, tasks, activePlan, next }
 }
 
 function statusColor(status: string, theme: ReturnType<() => TuiPluginApi["theme"]["current"]>) {
@@ -116,7 +133,9 @@ function View(props: { api: TuiPluginApi }) {
                 <box>
                   <text fg={theme().text}>
                     <b>Tasks</b>
-                    <span style={{ fg: theme().textMuted }}> ({d().brief.openTasksCount})</span>
+                    <Show when={d().activePlan}>
+                      {(plan) => <span style={{ fg: theme().textMuted }}> · {plan().title}</span>}
+                    </Show>
                   </text>
                   <For each={d().tasks}>
                     {(task) => (
