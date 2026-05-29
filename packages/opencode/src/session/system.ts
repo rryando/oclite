@@ -5,7 +5,6 @@ import { InstanceState } from "@/effect/instance-state"
 import PROMPT_DEFAULT from "./prompt/default.txt"
 import type { Provider } from "@/provider/provider"
 import type { Agent } from "@/agent/agent"
-import { Permission } from "@/permission"
 import { Skill } from "@/skill"
 
 export function provider(_model: Provider.Model) {
@@ -22,7 +21,7 @@ export class Service extends Context.Service<Service, Interface>()("@opencode/Sy
 export const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
-    const skill = yield* Skill.Service
+    yield* Skill.Service
 
     return Service.of({
       environment: Effect.fn("SystemPrompt.environment")(function* (model: Provider.Model) {
@@ -42,18 +41,10 @@ export const layer = Layer.effect(
         ]
       }),
 
-      skills: Effect.fn("SystemPrompt.skills")(function* (agent: Agent.Info) {
-        if (Permission.disabled(["skill"], agent.permission).has("skill")) return
-
-        const list = yield* skill.available(agent)
-
-        return [
-          "Skills provide specialized instructions and workflows for specific tasks.",
-          "Use the skill tool to load a skill when a task matches its description.",
-          // the agents seem to ingest the information about skills a bit better if we present a more verbose
-          // version of them here and a less verbose version in tool description, rather than vice versa.
-          Skill.fmt(list, { verbose: true }),
-        ].join("\n")
+      skills: Effect.fn("SystemPrompt.skills")(function* (_agent: Agent.Info) {
+        // Skills are already listed in the skill tool description.
+        // Injecting them here too is ~500 token duplication on every message.
+        return undefined
       }),
     })
   }),

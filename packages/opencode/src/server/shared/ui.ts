@@ -4,8 +4,6 @@ import { HttpBody, HttpClient, HttpClientRequest, HttpServerRequest, HttpServerR
 import { createHash } from "node:crypto"
 import { ProxyUtil } from "../proxy-util"
 
-let embeddedUIPromise: Promise<Record<string, string> | null> | undefined
-
 export const UI_UPSTREAM = new URL("https://app.opencode.ai")
 
 export const csp = (hash = "") =>
@@ -41,11 +39,8 @@ export function upstreamURL(path: string) {
   return new URL(path, UI_UPSTREAM).toString()
 }
 
-export function embeddedUI(disableEmbeddedWebUi: boolean) {
-  if (disableEmbeddedWebUi) return Promise.resolve(null)
-  return (embeddedUIPromise ??=
-    // @ts-expect-error - generated file at build time
-    import("opencode-web-ui.gen.ts").then((module) => module.default as Record<string, string>).catch(() => null))
+export function embeddedUI(_disableEmbeddedWebUi: boolean) {
+  return Promise.resolve(null)
 }
 
 function notFound() {
