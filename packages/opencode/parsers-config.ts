@@ -150,19 +150,20 @@ export default {
           // "https://raw.githubusercontent.com/nvim-treesitter/nvim-treesitter/refs/heads/master/queries/html/highlights.scm",
           "https://github.com/tree-sitter/tree-sitter-html/raw/refs/heads/master/queries/highlights.scm",
         ],
-        // TODO: Injections not working for some reason
+        // NOTE: HTML injections (embedded JS/CSS) are not enabled because opentui's injection
+        // handler resolves the target language from the *captured node's type* via injectionMapping.nodeTypes.
+        // Both <script> and <style> content nodes have type "raw_text", so they are indistinguishable.
+        // The standard tree-sitter `#set! injection.language` predicate is not read by the opentui worker.
+        // Fix: update opentui's parser.worker to read injection.language predicates, then re-enable:
         // injections: [
         //   "https://github.com/tree-sitter/tree-sitter-html/raw/refs/heads/master/queries/injections.scm",
         // ],
       },
+      // injectionMapping requires opentui predicate support first (see note above):
       // injectionMapping: {
       //   nodeTypes: {
       //     script_element: "javascript",
       //     style_element: "css",
-      //   },
-      //   infoStringMap: {
-      //     javascript: "javascript",
-      //     css: "css",
       //   },
       // },
     },
