@@ -60,6 +60,22 @@ export function webSearchEnabled(providerID: ProviderID, flags = { exa: false, p
   return providerID === ProviderID.opencode || flags.exa || flags.parallel
 }
 
+// Tools in the core set are always sent to the model.
+// Extended tools are only included when OPENCODE_LEAN_TOOLS is not set.
+const CORE_TOOL_IDS = new Set([
+  "shell",
+  "read",
+  "glob",
+  "grep",
+  "edit",
+  "write",
+  "apply_patch",
+  "task",
+  "todowrite",
+  "skill",
+  "invalid",
+])
+
 type TaskDef = Tool.InferDef<typeof TaskTool>
 type ReadDef = Tool.InferDef<typeof ReadTool>
 
@@ -323,6 +339,13 @@ export const layer: Layer.Layer<
           input.modelID.includes("gpt-") && !input.modelID.includes("oss") && !input.modelID.includes("gpt-4")
         if (tool.id === ApplyPatchTool.id) return usePatch
         if (tool.id === EditTool.id || tool.id === WriteTool.id) return !usePatch
+
+        // Lean tool loading: only include core tools by default.
+        // Extended tools (webfetch, websearch, repo_clone, repo_overview, skill, lsp, plan, question)
+        // are excluded when OPENCODE_LEAN_TOOLS=true to reduce token overhead.
+        if (flags.leanTools && !CORE_TOOL_IDS.has(tool.id)) {
+          return false
+        }
 
         return true
       })
