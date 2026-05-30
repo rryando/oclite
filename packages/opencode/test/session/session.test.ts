@@ -185,3 +185,42 @@ describe("Session", () => {
     }),
   )
 })
+
+describe("Session linked scope", () => {
+  it.live("linked scope returns own sessions plus cross-project sessions this project spawned", () =>
+    Effect.gen(function* () {
+      const session = yield* SessionNs.Service
+      // Two separate git roots => two distinct project ids in the shared db.
+      const dirA = yield* tmpdirScoped({ git: true })
+      const dirB = yield* tmpdirScoped({ git: true })
+
+      // Origin session lives in project A.
+      const origin = yield* provideInstance(dirA)(session.create({ title: "origin-A" }))
+      // Unrelated session in project B (no link back to A).
+      const unrelated = yield* provideInstance(dirB)(session.create({ title: "unrelated-B" }))
+      // Cross-project spawned session: created in project B context but linked to A's origin.
+      const spawned = yield* provideInstance(dirB)(
+        session.create({ title: "spawned-B-from-A", originSessionID: origin.id }),
+      )
+
+      // Default scope from A: only A's own sessions are visible.
+      const defaultIds = yield* provideInstance(dirA)(session.list()).pipe(Effect.map((s) => s.map((x) => x.id)))
+      expect(defaultIds).toContain(origin.id)
+      expect(defaultIds).not.toContain(spawned.id)
+      expect(defaultIds).not.toContain(unrelated.id)
+
+      // Linked scope from A: A's own sessions PLUS the cross-project session A spawned.
+      const linkedIds = yield* provideInstance(dirA)(session.list({ scope: "linked" })).pipe(
+        Effect.map((s) => s.map((x) => x.id)),
+      )
+      expect(linkedIds).toContain(origin.id)
+      expect(linkedIds).toContain(spawned.id)
+      // A did not spawn `unrelated`, so it stays invisible.
+      expect(linkedIds).not.toContain(unrelated.id)
+
+      yield* session.remove(spawned.id)
+      yield* session.remove(unrelated.id)
+      yield* session.remove(origin.id)
+    }),
+  )
+})

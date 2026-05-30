@@ -78,6 +78,7 @@ export function fromRow(row: SessionRow): Info {
     directory: row.directory,
     path: row.path ?? undefined,
     parentID: row.parent_id ?? undefined,
+    originSessionID: row.origin_session_id ?? undefined,
     title: row.title,
     agent: row.agent ?? undefined,
     model: row.model
@@ -117,6 +118,7 @@ export function toRow(info: Info) {
     project_id: info.projectID,
     workspace_id: info.workspaceID,
     parent_id: info.parentID,
+    origin_session_id: info.originSessionID,
     slug: info.slug,
     directory: info.directory,
     path: info.path,
@@ -213,6 +215,9 @@ export const Info = Schema.Struct({
   directory: Schema.String,
   path: optionalOmitUndefined(Schema.String),
   parentID: optionalOmitUndefined(SessionID),
+  // The session that spawned this one across projects. Distinct from parentID,
+  // which denotes a subagent child within the same project.
+  originSessionID: optionalOmitUndefined(SessionID),
   summary: optionalOmitUndefined(Summary),
   cost: optionalOmitUndefined(Schema.Finite),
   tokens: optionalOmitUndefined(Tokens),
@@ -243,6 +248,8 @@ export type GlobalInfo = Types.DeepMutable<Schema.Schema.Type<typeof GlobalInfo>
 export const CreateInput = Schema.optional(
   Schema.Struct({
     parentID: Schema.optional(SessionID),
+    // The session that spawned this one across projects. See Info.originSessionID.
+    originSessionID: Schema.optional(SessionID),
     title: Schema.optional(Schema.String),
     agent: Schema.optional(Schema.String),
     model: Schema.optional(Model),
@@ -279,7 +286,7 @@ export const MessagesInput = Schema.Struct({
 })
 export type ListInput = {
   directory?: string
-  scope?: "project"
+  scope?: "project" | "linked"
   path?: string
   workspaceID?: WorkspaceID
   roots?: boolean
@@ -452,6 +459,7 @@ export interface Interface {
   readonly list: (input?: ListInput) => Effect.Effect<Info[]>
   readonly create: (input?: {
     parentID?: SessionID
+    originSessionID?: SessionID
     title?: string
     agent?: string
     model?: Schema.Schema.Type<typeof Model>
@@ -526,6 +534,7 @@ export const layer: Layer.Layer<
       agent?: string
       model?: Schema.Schema.Type<typeof Model>
       parentID?: SessionID
+      originSessionID?: SessionID
       workspaceID?: WorkspaceID
       directory: string
       path?: string
@@ -541,6 +550,7 @@ export const layer: Layer.Layer<
         path: input.path,
         workspaceID: input.workspaceID,
         parentID: input.parentID,
+        originSessionID: input.originSessionID,
         title: input.title ?? createDefaultTitle(!!input.parentID),
         agent: input.agent,
         model: input.model,
@@ -656,6 +666,7 @@ export const layer: Layer.Layer<
 
     const create = Effect.fn("Session.create")(function* (input?: {
       parentID?: SessionID
+      originSessionID?: SessionID
       title?: string
       agent?: string
       model?: Schema.Schema.Type<typeof Model>
@@ -666,6 +677,7 @@ export const layer: Layer.Layer<
       const workspace = yield* InstanceState.workspaceID
       return yield* createNext({
         parentID: input?.parentID,
+        originSessionID: input?.originSessionID,
         directory: ctx.directory,
         path: sessionPath(ctx.worktree, ctx.directory),
         title: input?.title,
@@ -894,7 +906,24 @@ function* listByProject(
     experimentalWorkspaces: boolean
   },
 ) {
-  const conditions = [eq(SessionTable.project_id, input.projectID)]
+  // "linked" scope: current project's sessions PLUS any session whose
+  // origin_session_id points at a session in the current project (the
+  // cross-project sessions this project spawned). All other scopes keep the
+  // plain project_id equality predicate unchanged.
+  const projectCondition =
+    input.scope === "linked"
+      ? or(
+          eq(SessionTable.project_id, input.projectID),
+          inArray(
+            SessionTable.origin_session_id,
+            Database.use((db) =>
+              db.select({ id: SessionTable.id }).from(SessionTable).where(eq(SessionTable.project_id, input.projectID)),
+            ),
+          ),
+        )!
+      : eq(SessionTable.project_id, input.projectID)
+
+  const conditions = [projectCondition]
 
   if (input.workspaceID) {
     conditions.push(eq(SessionTable.workspace_id, input.workspaceID))
@@ -909,7 +938,7 @@ function* listByProject(
           : or(...conds)!,
       )
     }
-  } else if (input.scope !== "project" && !input.experimentalWorkspaces) {
+  } else if (input.scope !== "project" && input.scope !== "linked" && !input.experimentalWorkspaces) {
     if (input.directory) {
       conditions.push(eq(SessionTable.directory, input.directory))
     }

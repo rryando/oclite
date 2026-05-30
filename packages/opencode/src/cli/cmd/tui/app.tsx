@@ -79,6 +79,7 @@ import {
 
 import type { EventSource } from "./context/sdk"
 import { DialogVariant } from "./component/dialog-variant"
+import { TabStrip } from "./component/tab-strip"
 
 const appGlobalBindingCommands = [
   "session.list",
@@ -92,6 +93,9 @@ const appGlobalBindingCommands = [
   "session.quick_switch.7",
   "session.quick_switch.8",
   "session.quick_switch.9",
+  "session.tab.new",
+  "session.tab.close",
+  "session.tab.cycle",
 ] as const
 
 const appBindingCommands = [
@@ -526,6 +530,9 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
   // Handle --session with --fork: wait for sync to be fully complete before forking
   // (session list loads in non-blocking phase for --session, so we must wait for "complete"
   // to avoid a race where reconcile overwrites the newly forked session)
+  // Spawned sessions we have already auto-pinned + focused once; prevents repeat focus-stealing.
+  const surfacedSpawned = new Set<string>()
+
   let forked = false
   createEffect(() => {
     if (forked || sync.status !== "complete" || !args.sessionID || !args.fork) return
@@ -537,6 +544,33 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
         toast.show({ message: "Failed to fork session", variant: "error" })
       }
     })
+  })
+
+  // Auto-pin + auto-focus-once for cross-project spawned sessions (multi-tab only).
+  //
+  // Spawned sessions arrive live via the global SSE stream (sync's session.updated handler adds
+  // unknown sessions to the store). A spawned session carries `originSessionID` pointing at the
+  // session that spawned it. We only surface ones whose lineage belongs to THIS TUI: the origin
+  // must resolve to a native local session of the current project (same directory, not itself a
+  // spawned session). Each such session is pinned and focused exactly ONCE — `surfacedSpawned`
+  // tracks already-surfaced ids so we never steal focus again after the initial reveal.
+  createEffect(() => {
+    if (!kv.get("multi_tab_enabled", false)) return
+    if (sync.status === "loading") return
+    const currentDir = project.instance.directory()
+    for (const session of sync.data.session) {
+      if (session.parentID !== undefined) continue
+      if (!session.originSessionID) continue
+      if (surfacedSpawned.has(session.id)) continue
+      const origin = sync.session.get(session.originSessionID)
+      const lineageIsOurs = origin && !origin.originSessionID && origin.directory === currentDir
+      if (!lineageIsOurs) continue
+      surfacedSpawned.add(session.id)
+      // 9-slot fallback: if every slot is taken we cannot pin, but the session stays reachable via
+      // the session switcher — we still focus it once so the spawn result is surfaced.
+      local.session.pin(session.id)
+      route.navigate({ type: "session", sessionID: session.id })
+    }
   })
 
   createEffect(
@@ -627,6 +661,57 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
           local.session.quickSwitch(i + 1)
         },
       })),
+      {
+        name: "session.tab.new",
+        title: "New tab",
+        category: "Session",
+        // Multi-tab only: spins up a fresh top-level session in the current directory, pins it
+        // (unless all 9 slots are full, in which case we just navigate), and focuses it.
+        hidden: !kv.get("multi_tab_enabled", false),
+        enabled: () => kv.get("multi_tab_enabled", false),
+        run: async () => {
+          dialog.clear()
+          const agent = local.agent.current()
+          const model = local.model.current()
+          const res = await sdk.client.session.create({
+            ...(agent ? { agent: agent.name } : {}),
+            ...(model
+              ? { model: { providerID: model.providerID, id: model.modelID, variant: local.model.variant.current() } }
+              : {}),
+          })
+          if (res.error || !res.data?.id) {
+            toast.show({ message: "Failed to open new tab", variant: "error" })
+            return
+          }
+          // pin() returns false when all 9 slots are full. The session is still created and
+          // reachable via the session switcher; surface that it has no tab so it isn't silent.
+          if (!local.session.pin(res.data.id)) {
+            toast.show({ message: "Tab limit reached (9 max) — session created but not pinned", variant: "warning" })
+          }
+          route.navigate({ type: "session", sessionID: res.data.id })
+        },
+      },
+      {
+        name: "session.tab.close",
+        title: "Close tab",
+        category: "Session",
+        hidden: !kv.get("multi_tab_enabled", false),
+        enabled: () => kv.get("multi_tab_enabled", false) && route.data.type === "session",
+        run: () => {
+          if (route.data.type !== "session") return
+          local.session.closeTab(route.data.sessionID)
+        },
+      },
+      {
+        name: "session.tab.cycle",
+        title: "Cycle tabs",
+        category: "Session",
+        hidden: !kv.get("multi_tab_enabled", false),
+        enabled: () => kv.get("multi_tab_enabled", false),
+        run: () => {
+          local.session.cycleTab()
+        },
+      },
       {
         name: "model.list",
         title: "Switch model",
@@ -929,6 +1014,16 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
           dialog.clear()
         },
       },
+      {
+        name: "app.toggle.multi_tab",
+        title: kv.get("multi_tab_enabled", false) ? "Disable multi-project tabs" : "Enable multi-project tabs",
+        category: "System",
+        run: async () => {
+          kv.set("multi_tab_enabled", !kv.get("multi_tab_enabled", false))
+          await sync.session.refresh()
+          dialog.clear()
+        },
+      },
     ].map((command) => ({
       namespace: "palette",
       ...command,
@@ -1076,6 +1171,9 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
         <TimeToFirstDraw />
       </Show>
       <Show when={ready()}>
+        <Show when={kv.get("multi_tab_enabled", false)}>
+          <TabStrip />
+        </Show>
         <box flexGrow={1} minHeight={0} flexDirection="column">
           <Switch>
             <Match when={route.data.type === "home"}>

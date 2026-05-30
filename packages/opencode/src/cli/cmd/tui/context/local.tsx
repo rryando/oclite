@@ -468,6 +468,48 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           if (route.data.type === "session" && route.data.sessionID === target) return
           route.navigate({ type: "session", sessionID: target })
         },
+        // Tab-strip primitives below operate over the same `pinned`/`slots` state as the
+        // session list, so tabs and quick-switch slots never diverge.
+        // Idempotent pin that respects the 9-slot cap; returns whether the session ended up pinned.
+        pin(sessionID: string) {
+          if (sessionStore.pinned.includes(sessionID)) return true
+          if (slots().length >= 9) return false
+          batch(() => {
+            setSessionStore("pinned", [...sessionStore.pinned, sessionID])
+            save()
+          })
+          return true
+        },
+        cycleTab() {
+          const open = slots()
+          if (open.length === 0) return
+          const active = route.data.type === "session" ? route.data.sessionID : undefined
+          const index = active ? open.indexOf(active) : -1
+          route.navigate({ type: "session", sessionID: open[(index + 1) % open.length] })
+        },
+        // Unpins a tab and, when it was the active one, moves to an adjacent tab (or home if none).
+        closeTab(sessionID: string) {
+          batch(() => {
+            const open = slots()
+            const index = open.indexOf(sessionID)
+            const wasActive = route.data.type === "session" && route.data.sessionID === sessionID
+            if (sessionStore.pinned.includes(sessionID)) {
+              setSessionStore(
+                "pinned",
+                sessionStore.pinned.filter((x) => x !== sessionID),
+              )
+              save()
+            }
+            if (!wasActive) return
+            const remaining = open.filter((x) => x !== sessionID)
+            if (remaining.length === 0) {
+              route.navigate({ type: "home" })
+              return
+            }
+            const next = remaining[Math.min(index, remaining.length - 1)]
+            route.navigate({ type: "session", sessionID: next })
+          })
+        },
       }
     })
 

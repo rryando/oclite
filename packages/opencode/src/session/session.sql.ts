@@ -23,6 +23,10 @@ export const SessionTable = sqliteTable(
       .references(() => ProjectTable.id, { onDelete: "cascade" }),
     workspace_id: text().$type<WorkspaceID>(),
     parent_id: text().$type<SessionID>(),
+    // The session that spawned this one across projects (cross-project top-level
+    // spawn). Distinct from parent_id, which denotes a subagent child within the
+    // same project. Nullable: most sessions have no origin.
+    origin_session_id: text().$type<SessionID>(),
     slug: text().notNull(),
     directory: text().notNull(),
     path: text(),
@@ -55,6 +59,7 @@ export const SessionTable = sqliteTable(
     index("session_project_idx").on(table.project_id),
     index("session_workspace_idx").on(table.workspace_id),
     index("session_parent_idx").on(table.parent_id),
+    index("session_origin_idx").on(table.origin_session_id),
   ],
 )
 

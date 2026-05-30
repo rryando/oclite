@@ -3050,7 +3050,7 @@ export class Session2 extends HeyApiClient {
     parameters?: {
       directory?: string
       workspace?: string
-      scope?: "project"
+      scope?: "project" | "linked"
       path?: string
       roots?: boolean | "true" | "false"
       start?: number
@@ -3093,6 +3093,7 @@ export class Session2 extends HeyApiClient {
       directory?: string
       workspace?: string
       parentID?: string
+      originSessionID?: string
       title?: string
       agent?: string
       model?: {
@@ -3113,6 +3114,7 @@ export class Session2 extends HeyApiClient {
             { in: "query", key: "directory" },
             { in: "query", key: "workspace" },
             { in: "body", key: "parentID" },
+            { in: "body", key: "originSessionID" },
             { in: "body", key: "title" },
             { in: "body", key: "agent" },
             { in: "body", key: "model" },
