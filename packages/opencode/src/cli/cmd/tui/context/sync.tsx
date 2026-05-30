@@ -118,7 +118,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       // Multi-tab mode (default off) uses the "linked" scope: the current project's sessions
       // plus any cross-project session this project spawned (origin_session_id points at one
       // of our sessions), so directory-aware spawned tabs are visible for pinning.
-      if (kv.get("multi_tab_enabled", false)) return { scope: "linked" }
+      if (kv.get("multi_tab_enabled", true)) return { scope: "linked" }
       if (!kv.get("session_directory_filter_enabled", true)) return { scope: "project" }
       if (!project.data.instance.path.worktree || !project.data.instance.path.directory) return { scope: "project" }
       return {

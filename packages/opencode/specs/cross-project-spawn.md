@@ -1,8 +1,9 @@
 # Cross-project sessions
 
 Reference for spawning interactive sessions in another project's directory and
-surfacing them as tabs in the TUI. The whole feature is experimental and
-disabled by default.
+surfacing them as tabs in the TUI. The feature is enabled by default: the
+`spawn_project` tool is a core tool always available to the model, and the TUI
+tab strip is on by default (toggle it off from the command palette).
 
 ## Overview
 
@@ -12,22 +13,18 @@ disabled by default.
   A. It is linked back to A through `Session.Info.originSessionID`.
 - The spawned turn runs detached. When it finishes, its result is injected back
   into the origin session A as a synthetic message.
-- The TUI can surface cross-project sessions as directory-aware tabs when the
-  `multi_tab_enabled` flag is set.
+- The TUI surfaces cross-project sessions as directory-aware tabs by default
+  (the `multi_tab_enabled` KV flag defaults to on; disable it from the command
+  palette: "Disable multi-project tabs").
 
 ## `spawn_project` tool
 
 Spawns an interactive top-level session in a **different** project directory.
 
-### Enabling
+### Availability
 
-The tool is gated behind an experimental flag and is hidden from the model
-unless it is enabled. Enable it with either:
-
-- `OPENCODE_EXPERIMENTAL_CROSS_PROJECT_SPAWN=1`, or
-- `OPENCODE_EXPERIMENTAL=1` (turns on all experimental flags).
-
-Internally this maps to the `experimentalCrossProjectSpawn` runtime flag.
+`spawn_project` is a core tool (`CORE_TOOL_IDS`) registered unconditionally, so
+it is always present in the model's tool list — no flag or env var required.
 
 ### Parameters
 

@@ -555,7 +555,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
   // spawned session). Each such session is pinned and focused exactly ONCE — `surfacedSpawned`
   // tracks already-surfaced ids so we never steal focus again after the initial reveal.
   createEffect(() => {
-    if (!kv.get("multi_tab_enabled", false)) return
+    if (!kv.get("multi_tab_enabled", true)) return
     if (sync.status === "loading") return
     const currentDir = project.instance.directory()
     for (const session of sync.data.session) {
@@ -667,8 +667,8 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
         category: "Session",
         // Multi-tab only: spins up a fresh top-level session in the current directory, pins it
         // (unless all 9 slots are full, in which case we just navigate), and focuses it.
-        hidden: !kv.get("multi_tab_enabled", false),
-        enabled: () => kv.get("multi_tab_enabled", false),
+        hidden: !kv.get("multi_tab_enabled", true),
+        enabled: () => kv.get("multi_tab_enabled", true),
         run: async () => {
           dialog.clear()
           const agent = local.agent.current()
@@ -695,8 +695,8 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
         name: "session.tab.close",
         title: "Close tab",
         category: "Session",
-        hidden: !kv.get("multi_tab_enabled", false),
-        enabled: () => kv.get("multi_tab_enabled", false) && route.data.type === "session",
+        hidden: !kv.get("multi_tab_enabled", true),
+        enabled: () => kv.get("multi_tab_enabled", true) && route.data.type === "session",
         run: () => {
           if (route.data.type !== "session") return
           local.session.closeTab(route.data.sessionID)
@@ -706,8 +706,8 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
         name: "session.tab.cycle",
         title: "Cycle tabs",
         category: "Session",
-        hidden: !kv.get("multi_tab_enabled", false),
-        enabled: () => kv.get("multi_tab_enabled", false),
+        hidden: !kv.get("multi_tab_enabled", true),
+        enabled: () => kv.get("multi_tab_enabled", true),
         run: () => {
           local.session.cycleTab()
         },
@@ -1016,10 +1016,10 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
       },
       {
         name: "app.toggle.multi_tab",
-        title: kv.get("multi_tab_enabled", false) ? "Disable multi-project tabs" : "Enable multi-project tabs",
+        title: kv.get("multi_tab_enabled", true) ? "Disable multi-project tabs" : "Enable multi-project tabs",
         category: "System",
         run: async () => {
-          kv.set("multi_tab_enabled", !kv.get("multi_tab_enabled", false))
+          kv.set("multi_tab_enabled", !kv.get("multi_tab_enabled", true))
           await sync.session.refresh()
           dialog.clear()
         },
@@ -1171,7 +1171,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
         <TimeToFirstDraw />
       </Show>
       <Show when={ready()}>
-        <Show when={kv.get("multi_tab_enabled", false)}>
+        <Show when={kv.get("multi_tab_enabled", true)}>
           <TabStrip />
         </Show>
         <box flexGrow={1} minHeight={0} flexDirection="column">
