@@ -563,12 +563,24 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
       if (!session.originSessionID) continue
       if (surfacedSpawned.has(session.id)) continue
       const origin = sync.session.get(session.originSessionID)
-      const lineageIsOurs = origin && !origin.originSessionID && origin.directory === currentDir
+      // Lineage belongs to this TUI when the origin is a native (non-spawned) local session whose
+      // directory shares a worktree with the current instance. Use a parent/child relationship test
+      // rather than strict equality: the origin may live at the worktree root while the TUI was
+      // launched from a subdir (or vice versa), which strict `===` wrongly rejects.
+      const lineageIsOurs =
+        origin &&
+        !origin.originSessionID &&
+        origin.parentID === undefined &&
+        directoriesShareWorktree(origin.directory, currentDir)
       if (!lineageIsOurs) continue
       surfacedSpawned.add(session.id)
-      // 9-slot fallback: if every slot is taken we cannot pin, but the session stays reachable via
-      // the session switcher — we still focus it once so the spawn result is surfaced.
+      // Surface BOTH sides of the spawn as tabs. Pin the spawned target FIRST: under the 9-slot cap
+      // it is the session the user just triggered, so it must win the last slot if one remains.
+      // Then pin the origin so the local session that issued the spawn also gets a tab. pin() is
+      // idempotent and respects the cap, so re-pinning an already-pinned origin is a no-op, and if
+      // the cap is full the session still stays reachable via the session switcher.
       local.session.pin(session.id)
+      local.session.pin(origin.id)
       route.navigate({ type: "session", sessionID: session.id })
     }
   })
@@ -1193,4 +1205,14 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
       <StartupLoading ready={ready} />
     </box>
   )
+}
+
+// True when two absolute directories belong to the same worktree, i.e. they are equal or one is an
+// ancestor of the other. A spawned session's origin may live at the worktree root while the TUI was
+// launched from a subdir (or vice versa), so strict string equality is too narrow.
+function directoriesShareWorktree(a: string, b: string) {
+  const x = a.replace(/\/+$/, "")
+  const y = b.replace(/\/+$/, "")
+  if (x === y) return true
+  return x.startsWith(y + "/") || y.startsWith(x + "/")
 }

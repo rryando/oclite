@@ -6,6 +6,19 @@ type EventMetadata = {
   workspace: string | undefined
 }
 
+// Session ids of cross-project spawned sessions linked to this process. Their lifecycle events
+// carry an originSessionID, but their follow-on message/status events do NOT — those only carry a
+// sessionID. We learn the linked ids from the lifecycle events (which arrive first) so we can also
+// admit the matching message/status events past the project filter. Module-level because useEvent()
+// returns fresh closures per consumer; every subscription shares the same linked set.
+const linkedSessions = new Set<string>()
+
+// Seed a linked session id discovered outside the live event stream (e.g. the bootstrap linked-scope
+// query), so its message/status events are admitted even if no live lifecycle event arrived first.
+export function registerLinkedSession(sessionID: string) {
+  linkedSessions.add(sessionID)
+}
+
 export function useEvent() {
   const project = useProject()
   const sdk = useSDK()
@@ -18,6 +31,36 @@ export function useEvent() {
 
       if (event.directory === "global" || event.project === project.project()) {
         handler(event.payload, { workspace: event.workspace })
+        return
+      }
+
+      // Cross-project spawned sessions publish their events tagged with the TARGET project (not this
+      // TUI's), so the project filter above drops them. Admit the ones that belong to a linked
+      // session so the spawned tab gets its metadata, transcript stream, and status.
+      const payload = event.payload
+      if (
+        (payload.type === "session.created" ||
+          payload.type === "session.updated" ||
+          payload.type === "session.deleted") &&
+        payload.properties.info.originSessionID
+      ) {
+        if (payload.type === "session.deleted") linkedSessions.delete(payload.properties.info.id)
+        else linkedSessions.add(payload.properties.info.id)
+        handler(payload, { workspace: event.workspace })
+        return
+      }
+
+      // Message + status events carry only a sessionID; forward them when that session is linked.
+      if (
+        (payload.type === "message.updated" ||
+          payload.type === "message.removed" ||
+          payload.type === "message.part.updated" ||
+          payload.type === "message.part.delta" ||
+          payload.type === "message.part.removed" ||
+          payload.type === "session.status") &&
+        linkedSessions.has(payload.properties.sessionID)
+      ) {
+        handler(payload, { workspace: event.workspace })
       }
     })
   }

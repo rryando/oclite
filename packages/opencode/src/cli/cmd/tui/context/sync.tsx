@@ -20,7 +20,7 @@ import type {
 } from "@opencode-ai/sdk/v2"
 import { createStore, produce, reconcile } from "solid-js/store"
 import { useProject } from "@tui/context/project"
-import { useEvent } from "@tui/context/event"
+import { registerLinkedSession, useEvent } from "@tui/context/event"
 import { useSDK } from "@tui/context/sdk"
 import { Binary } from "@opencode-ai/core/util/binary"
 import { createSimpleContext } from "./helper"
@@ -229,6 +229,18 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
               "session",
               produce((draft) => {
                 draft.splice(result.index, 1)
+              }),
+            )
+          }
+          break
+        }
+        case "session.created": {
+          const result = Binary.search(store.session, event.properties.info.id, (s) => s.id)
+          if (!result.found) {
+            setStore(
+              "session",
+              produce((draft) => {
+                draft.splice(result.index, 0, event.properties.info)
               }),
             )
           }
@@ -524,11 +536,20 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
         },
         async sync(sessionID: string) {
           if (fullSyncedSessions.has(sessionID)) return
+          // The SDK client is pinned to the current project's directory, but a cross-project spawned
+          // session lives elsewhere. Pass the session's own directory so the server routes the fetch
+          // to the right instance — otherwise the transcript comes back empty. Undefined for local
+          // sessions, in which case the client-level directory header is used (unchanged behavior).
+          const linked = result.session.get(sessionID)
+          const directory = linked?.directory
+          // Seed the linked set so live message/status events for this session are admitted past the
+          // project filter even if its lifecycle event never arrived live (e.g. loaded at bootstrap).
+          if (linked?.originSessionID) registerLinkedSession(sessionID)
           const [session, messages, todo, diff] = await Promise.all([
-            sdk.client.session.get({ sessionID }, { throwOnError: true }),
-            sdk.client.session.messages({ sessionID, limit: 100 }),
-            sdk.client.session.todo({ sessionID }),
-            sdk.client.session.diff({ sessionID }),
+            sdk.client.session.get({ sessionID, directory }, { throwOnError: true }),
+            sdk.client.session.messages({ sessionID, directory, limit: 100 }),
+            sdk.client.session.todo({ sessionID, directory }),
+            sdk.client.session.diff({ sessionID, directory }),
           ])
           setStore(
             produce((draft) => {
