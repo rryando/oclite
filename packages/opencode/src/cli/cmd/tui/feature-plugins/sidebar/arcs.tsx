@@ -27,7 +27,7 @@ interface ArcsBrief {
     nextAction: string
   }
   openTasksCount: number
-  topOpenTasks: ArcsTask[]
+  topOpenTasks?: ArcsTask[]
   activePlansCount: number
 }
 
@@ -61,7 +61,7 @@ function fetchArcs(): ArcsData | null {
 
   const tasks = activePlan
     ? (spawnJson<ArcsTask[]>(["arcs", "task", "list", brief.slug, `--planId=${activePlan.id}`, "--lean", "--json"]) ?? []).filter((t) => !INACTIVE.has(t.status))
-    : (spawnJson<ArcsTask[]>(["arcs", "task", "list", brief.slug, "--lean", "--json"]) ?? brief.topOpenTasks).filter((t) => !INACTIVE.has(t.status))
+    : (spawnJson<ArcsTask[]>(["arcs", "task", "list", brief.slug, "--lean", "--json"]) ?? brief.topOpenTasks ?? []).filter((t) => !INACTIVE.has(t.status))
 
   const nextRaw = spawnJson<ArcsNext>(["arcs", "next", brief.slug, "--lean", "--json"])
   const next = nextRaw?.task ? nextRaw : null
