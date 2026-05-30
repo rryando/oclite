@@ -95,6 +95,22 @@ function timeoutController(ms: number) {
   }
 }
 
+async function googleVertexAccessToken(): Promise<string> {
+  try {
+    const { GoogleAuth } = await import("google-auth-library")
+    const auth = new GoogleAuth({ scopes: ["https://www.googleapis.com/auth/cloud-platform"] })
+    const client = await auth.getClient()
+    const token = await client.getAccessToken()
+    if (token.token) return token.token
+  } catch {}
+  // Fall back to gcloud CLI — works when user ran `gcloud auth login` but not
+  // `gcloud auth application-default login` (mirrors how `gcloud auth print-access-token` works)
+  const proc = Bun.spawn(["gcloud", "auth", "print-access-token"], { stdout: "pipe", stderr: "pipe" })
+  const token = (await new Response(proc.stdout).text()).trim()
+  if (!token) throw new Error("google-vertex: could not obtain an access token via ADC or gcloud CLI")
+  return token
+}
+
 function googleVertexAnthropicBaseURL(project: string | undefined, location: string | undefined) {
   if (!project) return
   if (location !== "eu" && location !== "us") return
@@ -500,15 +516,13 @@ function custom(dep: CustomDep): Record<string, CustomLoader> {
         options: {
           project,
           location,
+          // Used by createVertexAnthropic2 (Anthropic/Claude models on Vertex)
+          generateAuthToken: googleVertexAccessToken,
+          // Used by createVertex2 (Gemini models on Vertex) via the fetch interceptor
           fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
-            const { GoogleAuth } = await import("google-auth-library")
-            const auth = new GoogleAuth({ scopes: ["https://www.googleapis.com/auth/cloud-platform"] })
-            const client = await auth.getClient()
-            const token = await client.getAccessToken()
-
+            const token = await googleVertexAccessToken()
             const headers = new Headers(init?.headers)
-            headers.set("Authorization", `Bearer ${token.token}`)
-
+            headers.set("Authorization", `Bearer ${token}`)
             return fetch(input, { ...init, headers })
           },
         },
@@ -520,8 +534,12 @@ function custom(dep: CustomDep): Record<string, CustomLoader> {
     }),
     "google-vertex-anthropic": Effect.fnUntraced(function* () {
       const env = yield* dep.env()
-      const project = env["GOOGLE_CLOUD_PROJECT"] ?? env["GCP_PROJECT"] ?? env["GCLOUD_PROJECT"]
-      const location = env["GOOGLE_CLOUD_LOCATION"] ?? env["VERTEX_LOCATION"] ?? "global"
+      const project =
+        env["GOOGLE_VERTEX_PROJECT"] ??
+        env["GOOGLE_CLOUD_PROJECT"] ??
+        env["GCP_PROJECT"] ??
+        env["GCLOUD_PROJECT"]
+      const location = env["GOOGLE_VERTEX_LOCATION"] ?? env["GOOGLE_CLOUD_LOCATION"] ?? env["VERTEX_LOCATION"] ?? "global"
       const autoload = Boolean(project)
       if (!autoload) return { autoload: false }
       const baseURL = googleVertexAnthropicBaseURL(project, location)
@@ -530,6 +548,13 @@ function custom(dep: CustomDep): Record<string, CustomLoader> {
         options: {
           project,
           location,
+          generateAuthToken: googleVertexAccessToken,
+          fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
+            const token = await googleVertexAccessToken()
+            const headers = new Headers(init?.headers)
+            headers.set("Authorization", `Bearer ${token}`)
+            return fetch(input, { ...init, headers })
+          },
           ...(baseURL && { baseURL }),
         },
         async getModel(sdk: any, modelID) {
@@ -1564,6 +1589,10 @@ export const layer = Layer.effect(
 
         if (model.providerID === "google-vertex" && !model.api.npm.includes("@ai-sdk/openai-compatible")) {
           delete options.fetch
+          // keep generateAuthToken — used by createVertexAnthropic2 for Claude models on Vertex
+          if (model.api.npm !== "@ai-sdk/google-vertex/anthropic") {
+            delete options.generateAuthToken
+          }
         }
 
         if (model.api.npm.includes("@ai-sdk/openai-compatible") && options["includeUsage"] !== false) {

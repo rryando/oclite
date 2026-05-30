@@ -17,6 +17,7 @@ oclite strips opencode down to a focused core: a single unified system prompt, d
 | **TUI** | AI status indicator in session footer |
 | **TUI** | Subagent count indicator in session footer |
 | **TUI** | Accent border on user messages for visual hierarchy |
+| **Provider** | Google Vertex Anthropic: gcloud CLI auth fallback (no ADC required) |
 | **Branding** | ARCS logo + sidebar integration |
 
 ## Installation
@@ -85,6 +86,29 @@ Tests must be run from within package directories, not from the repo root:
 ```bash
 cd packages/opencode && bun test
 ```
+
+## Google Vertex AI (Anthropic/Claude)
+
+Upstream opencode requires Application Default Credentials (`gcloud auth application-default login`) for Claude models on Vertex AI. oclite adds a **gcloud CLI fallback** — if ADC isn't configured, it shells out to `gcloud auth print-access-token` (same token your regular `gcloud auth login` provides).
+
+**Required env:**
+
+```bash
+GOOGLE_VERTEX_PROJECT=your-gcp-project-id
+```
+
+**Optional:**
+
+```bash
+GOOGLE_VERTEX_LOCATION=global   # defaults to "global" for Anthropic, "us-central1" for Gemini
+```
+
+**Auth priority (tried in order):**
+
+1. Application Default Credentials (service account key via `GOOGLE_APPLICATION_CREDENTIALS`, or `gcloud auth application-default login`)
+2. `gcloud auth print-access-token` (regular `gcloud auth login` — no ADC setup needed)
+
+This means if you can run `gcloud auth print-access-token` and get a token, Claude on Vertex will work.
 
 ## Upstream
 
