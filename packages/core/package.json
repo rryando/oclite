@@ -14,6 +14,8 @@
     "opencode": "./bin/opencode"
   },
   "exports": {
+    "./public": "./src/public/index.ts",
+    "./session/runner": "./src/session/runner/index.ts",
     "./*": "./src/*.ts"
   },
   "imports": {},
