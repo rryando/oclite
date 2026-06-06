@@ -139,6 +139,9 @@ export function update<Result>(adapter: Adapter<Result>, event: SessionEvent.Eve
         }),
       )
     },
+    "session.next.context.updated": () => {
+      // No message-list effect; context-epoch display is handled by the TUI sync layer.
+    },
     "session.next.shell.started": (event) => {
       adapter.appendMessage(
         new SessionMessage.Shell({

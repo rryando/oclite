@@ -76,6 +76,17 @@ export const Synthetic = EventV2.define({
 })
 export type Synthetic = typeof Synthetic.Type
 
+export const ContextUpdated = EventV2.define({
+  type: "session.next.context.updated",
+  ...options,
+  schema: {
+    ...Base,
+    messageID: Schema.String,
+    text: Schema.String,
+  },
+})
+export type ContextUpdated = typeof ContextUpdated.Type
+
 export namespace Shell {
   export const Started = EventV2.define({
     type: "session.next.shell.started",
@@ -368,6 +379,7 @@ export const All = Schema.Union(
     ModelSwitched,
     Prompted,
     Synthetic,
+    ContextUpdated,
     Shell.Started,
     Shell.Ended,
     Step.Started,
