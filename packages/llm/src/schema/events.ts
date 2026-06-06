@@ -198,6 +198,7 @@ export type Finish = Schema.Schema.Type<typeof Finish>
 export const ProviderErrorEvent = Schema.Struct({
   type: Schema.tag("provider-error"),
   message: Schema.String,
+  classification: Schema.optional(Schema.Literals(["context-overflow"])),
   retryable: Schema.optional(Schema.Boolean),
   providerMetadata: Schema.optional(ProviderMetadata),
 }).annotate({ identifier: "LLM.Event.ProviderError" })
