@@ -33,7 +33,7 @@ import { ApplyPatchTool } from "./apply_patch"
 import { Glob } from "@opencode-ai/core/util/glob"
 import path from "path"
 import { pathToFileURL } from "url"
-import { Effect, Layer, Context } from "effect"
+import { Effect, Layer, Context, Ref } from "effect"
 import { FetchHttpClient, HttpClient } from "effect/unstable/http"
 import { ChildProcessSpawner } from "effect/unstable/process/ChildProcessSpawner"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
@@ -85,6 +85,7 @@ type ReadDef = Tool.InferDef<typeof ReadTool>
 type State = {
   custom: Tool.Def[]
   builtin: Tool.Def[]
+  attached: Tool.Def[]
   task: TaskDef
   read: ReadDef
 }
@@ -94,6 +95,7 @@ export interface Interface {
   readonly all: () => Effect.Effect<Tool.Def[]>
   readonly named: () => Effect.Effect<{ task: TaskDef; read: ReadDef }>
   readonly tools: (model: { providerID: ProviderID; modelID: ModelID; agent: Agent.Info }) => Effect.Effect<Tool.Def[]>
+  readonly attach: (tools: ReadonlyArray<Tool.Def>) => Effect.Effect<void>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/ToolRegistry") {}
@@ -154,6 +156,7 @@ export const layer: Layer.Layer<
     const skilltool = yield* SkillTool
     const agent = yield* Agent.Service
 
+    const attachedRef = yield* Ref.make<Tool.Def[]>([])
     const state = yield* InstanceState.make<State>(
       Effect.fn("ToolRegistry.state")(function* (ctx) {
         const custom: Tool.Def[] = []
@@ -266,6 +269,7 @@ export const layer: Layer.Layer<
 
         return {
           custom,
+          attached: [],
           builtin: [
             tool.invalid,
             ...(questionEnabled ? [tool.question] : []),
@@ -294,7 +298,8 @@ export const layer: Layer.Layer<
 
     const all: Interface["all"] = Effect.fn("ToolRegistry.all")(function* () {
       const s = yield* InstanceState.get(state)
-      return [...s.builtin, ...s.custom] as Tool.Def[]
+      const attached = yield* Ref.get(attachedRef)
+      return [...s.builtin, ...s.custom, ...attached] as Tool.Def[]
     })
 
     const ids: Interface["ids"] = Effect.fn("ToolRegistry.ids")(function* () {
@@ -392,7 +397,9 @@ export const layer: Layer.Layer<
       return { task: s.task, read: s.read }
     })
 
-    return Service.of({ ids, all, named, tools })
+    const attach: Interface["attach"] = (tools) => Ref.update(attachedRef, (existing) => [...existing, ...tools])
+
+    return Service.of({ ids, all, named, tools, attach })
   }),
 )
 
