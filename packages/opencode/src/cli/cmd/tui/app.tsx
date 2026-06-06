@@ -532,6 +532,10 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
   // to avoid a race where reconcile overwrites the newly forked session)
   // Spawned sessions we have already auto-pinned + focused once; prevents repeat focus-stealing.
   const surfacedSpawned = new Set<string>()
+  // Spawned sessions that already existed when this TUI started. They belong to previous runs, so
+  // we must NOT steal focus to them on launch — a freshly opened app stays on the home screen.
+  // Only sessions that arrive LIVE (after this initial snapshot) auto-focus.
+  let spawnSnapshotTaken = false
 
   let forked = false
   createEffect(() => {
@@ -554,10 +558,35 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
   // must resolve to a native local session of the current project (same directory, not itself a
   // spawned session). Each such session is pinned and focused exactly ONCE — `surfacedSpawned`
   // tracks already-surfaced ids so we never steal focus again after the initial reveal.
+  //
+  // On launch we snapshot pre-existing spawned sessions (leftovers from prior runs) into
+  // `surfacedSpawned` WITHOUT navigating, so a freshly opened TUI stays on the home screen. Only
+  // sessions that arrive live afterward steal focus.
   createEffect(() => {
     if (!kv.get("multi_tab_enabled", true)) return
     if (sync.status === "loading") return
     const currentDir = project.instance.directory()
+    // First non-loading pass: snapshot every spawned session that already exists. These predate
+    // this TUI launch (e.g. left over from a prior run), so we pin them as reachable tabs but mark
+    // them surfaced WITHOUT navigating — the newly opened app must stay fresh on the home screen.
+    if (!spawnSnapshotTaken) {
+      spawnSnapshotTaken = true
+      for (const session of sync.data.session) {
+        if (session.parentID !== undefined) continue
+        if (!session.originSessionID) continue
+        surfacedSpawned.add(session.id)
+        const origin = sync.session.get(session.originSessionID)
+        const lineageIsOurs =
+          origin &&
+          !origin.originSessionID &&
+          origin.parentID === undefined &&
+          directoriesShareWorktree(origin.directory, currentDir)
+        if (!lineageIsOurs) continue
+        local.session.pin(session.id)
+        local.session.pin(origin.id)
+      }
+      return
+    }
     for (const session of sync.data.session) {
       if (session.parentID !== undefined) continue
       if (!session.originSessionID) continue
