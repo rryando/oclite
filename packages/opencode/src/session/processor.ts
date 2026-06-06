@@ -78,6 +78,7 @@ interface ProcessorContext extends Input {
   needsCompaction: boolean
   currentText: MessageV2.TextPart | undefined
   reasoningMap: Record<string, MessageV2.ReasoningPart>
+  lastSystemHash: string | undefined
 }
 
 type StreamEvent = LLMEvent
@@ -118,6 +119,7 @@ export const layer = Layer.effect(
         needsCompaction: false,
         currentText: undefined,
         reasoningMap: {},
+        lastSystemHash: undefined,
       }
       let aborted = false
       const slog = log.clone().tag("session.id", input.sessionID).tag("messageID", input.assistantMessage.id)
@@ -787,6 +789,19 @@ export const layer = Layer.effect(
             ctx.currentText = undefined
             ctx.reasoningMap = {}
             yield* status.set(ctx.sessionID, { type: "busy" })
+            const hash = streamInput.system.join("\n")
+            if (hash !== ctx.lastSystemHash) {
+              // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
+              if (flags.experimentalEventSystem) {
+                yield* events.publish(SessionEvent.ContextUpdated, {
+                  sessionID: ctx.sessionID,
+                  messageID: ctx.assistantMessage.id,
+                  text: hash,
+                  timestamp: DateTime.makeUnsafe(Date.now()),
+                })
+              }
+              ctx.lastSystemHash = hash
+            }
             const stream = llm.stream(streamInput)
 
             yield* stream.pipe(
