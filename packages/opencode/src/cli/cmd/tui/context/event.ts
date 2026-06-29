@@ -50,14 +50,17 @@ export function useEvent() {
         return
       }
 
-      // Message + status events carry only a sessionID; forward them when that session is linked.
+      // Message + status + sync-v2 transcript events carry only a sessionID; forward them when that
+      // session is linked. (session.next.context.updated is tagged with the TARGET project, so it
+      // hits the project filter above just like message/status events.)
       if (
         (payload.type === "message.updated" ||
           payload.type === "message.removed" ||
           payload.type === "message.part.updated" ||
           payload.type === "message.part.delta" ||
           payload.type === "message.part.removed" ||
-          payload.type === "session.status") &&
+          payload.type === "session.status" ||
+          payload.type === "session.next.context.updated") &&
         linkedSessions.has(payload.properties.sessionID)
       ) {
         handler(payload, { workspace: event.workspace })
