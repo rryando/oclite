@@ -8,6 +8,7 @@ import * as Log from "@opencode-ai/core/util/log"
 import { errorMessage } from "@/util/error"
 import { withTimeout } from "@/util/timeout"
 import { withNetworkOptions, resolveNetworkOptionsNoConfig } from "@/cli/network"
+import { ServerAuth } from "@/server/auth"
 import { Filesystem } from "@/util/filesystem"
 import type { GlobalEvent } from "@opencode-ai/sdk/v2"
 import type { EventSource } from "./context/sdk"
@@ -111,6 +112,11 @@ export const TuiThreadCommand = cmd({
       .option("agent", {
         type: "string",
         describe: "agent to use",
+      })
+      .option("yolo", {
+        type: "boolean",
+        describe: "start in auto-approve permission mode (dangerous!)",
+        default: false,
       }),
   handler: async (args) => {
     // Keep ENABLE_PROCESSED_INPUT cleared even if other code flips it.
@@ -198,16 +204,26 @@ export const TuiThreadCommand = cmd({
         network.port !== 0 ||
         network.hostname !== "127.0.0.1"
 
+      // v1.17.x parity (PR #29876): when the TUI talks to an externally hosted
+      // server (spawned via the "server" RPC rather than proxied in-process
+      // through createWorkerFetch), there is no worker fetch wrapper to attach
+      // ServerAuth. Compute the auth header here so outgoing external requests
+      // carry it. worker.ts attaches ServerAuth.header() on the in-process path;
+      // this covers the external path.
+      const headers = external ? ServerAuth.headers() : undefined
+
       const transport = external
         ? {
             url: (await client.call("server", network)).url,
             fetch: undefined,
             events: undefined,
+            headers,
           }
         : {
             url: "http://opencode.internal",
             fetch: createWorkerFetch(client),
             events: createEventSource(client),
+            headers: undefined,
           }
 
       try {
@@ -216,6 +232,7 @@ export const TuiThreadCommand = cmd({
           sessionID: args.session,
           directory: cwd,
           fetch: transport.fetch,
+          headers,
         })
       } catch (error) {
         UI.error(errorMessage(error))
@@ -241,6 +258,7 @@ export const TuiThreadCommand = cmd({
           config,
           directory: cwd,
           fetch: transport.fetch,
+          headers: transport.headers,
           events: transport.events,
           args: {
             continue: args.continue,
@@ -249,6 +267,7 @@ export const TuiThreadCommand = cmd({
             model: args.model,
             prompt,
             fork: args.fork,
+            auto: args.yolo,
           },
         })
         await handle.done

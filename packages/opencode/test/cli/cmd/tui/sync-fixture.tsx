@@ -4,6 +4,7 @@ import { onMount } from "solid-js"
 import { ArgsProvider } from "../../../../src/cli/cmd/tui/context/args"
 import { createExit, ExitProvider } from "../../../../src/cli/cmd/tui/context/exit"
 import { KVProvider, useKV } from "../../../../src/cli/cmd/tui/context/kv"
+import { PermissionProvider } from "../../../../src/cli/cmd/tui/context/permission"
 import { ProjectProvider, useProject } from "../../../../src/cli/cmd/tui/context/project"
 import { SDKProvider } from "../../../../src/cli/cmd/tui/context/sdk"
 import { SyncProvider, useSync } from "../../../../src/cli/cmd/tui/context/sync"
@@ -48,9 +49,11 @@ export async function mount(override?: FetchHandler) {
         <KVProvider>
           <SDKProvider url="http://test" directory={directory} fetch={calls.fetch} events={events.source}>
             <ProjectProvider>
-              <SyncProvider>
-                <Probe />
-              </SyncProvider>
+              <PermissionProvider>
+                <SyncProvider>
+                  <Probe />
+                </SyncProvider>
+              </PermissionProvider>
             </ProjectProvider>
           </SDKProvider>
         </KVProvider>

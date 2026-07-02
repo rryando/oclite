@@ -31,6 +31,7 @@ import { useEvent } from "@tui/context/event"
 import { SDKProvider, useSDK } from "@tui/context/sdk"
 import { StartupLoading } from "@tui/component/startup-loading"
 import { SyncProvider, useSync } from "@tui/context/sync"
+import { PermissionProvider } from "@tui/context/permission"
 import { SyncProviderV2 } from "@tui/context/sync-v2"
 import { LocalProvider, useLocal } from "@tui/context/local"
 import { DialogModel } from "@tui/component/dialog-model"
@@ -119,6 +120,7 @@ const appBindingCommands = [
   "theme.mode.lock",
   "help.show",
   "docs.open",
+  "diff.open",
   "workspace.list",
   "app.debug",
   "app.console",
@@ -258,27 +260,29 @@ async function mountTui(input: TuiInput & { keymap: ReturnType<typeof createDefa
                         events={input.events}
                       >
                         <ProjectProvider>
-                          <SyncProvider>
-                            <SyncProviderV2>
-                              <ThemeProvider mode={mode}>
-                                <LocalProvider>
-                                  <PromptStashProvider>
-                                    <DialogProvider>
-                                      <FrecencyProvider>
-                                        <PromptHistoryProvider>
-                                          <PromptRefProvider>
-                                            <EditorContextProvider>
-                                              <App onSnapshot={input.onSnapshot} />
-                                            </EditorContextProvider>
-                                          </PromptRefProvider>
-                                        </PromptHistoryProvider>
-                                      </FrecencyProvider>
-                                    </DialogProvider>
-                                  </PromptStashProvider>
-                                </LocalProvider>
-                              </ThemeProvider>
-                            </SyncProviderV2>
-                          </SyncProvider>
+                          <PermissionProvider>
+                            <SyncProvider>
+                              <SyncProviderV2>
+                                <ThemeProvider mode={mode}>
+                                  <LocalProvider>
+                                    <PromptStashProvider>
+                                      <DialogProvider>
+                                        <FrecencyProvider>
+                                          <PromptHistoryProvider>
+                                            <PromptRefProvider>
+                                              <EditorContextProvider>
+                                                <App onSnapshot={input.onSnapshot} />
+                                              </EditorContextProvider>
+                                            </PromptRefProvider>
+                                          </PromptHistoryProvider>
+                                        </FrecencyProvider>
+                                      </DialogProvider>
+                                    </PromptStashProvider>
+                                  </LocalProvider>
+                                </ThemeProvider>
+                              </SyncProviderV2>
+                            </SyncProvider>
+                          </PermissionProvider>
                         </ProjectProvider>
                       </SDKProvider>
                     </TuiConfigProvider>
@@ -1062,6 +1066,16 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
         run: async () => {
           kv.set("multi_tab_enabled", !kv.get("multi_tab_enabled", true))
           await sync.session.refresh()
+          dialog.clear()
+        },
+      },
+      {
+        name: "permission.mode",
+        title:
+          local.permission.mode === "auto" ? "Disable auto-approve permissions" : "Enable auto-approve permissions",
+        category: "System",
+        run: () => {
+          local.permission.toggle()
           dialog.clear()
         },
       },
