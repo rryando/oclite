@@ -216,6 +216,7 @@ export type Session = {
     snapshot?: string
     diff?: string
   }
+  originSessionID?: string
 }
 
 export type OutputFormatText = {
@@ -3794,6 +3795,8 @@ export type SessionInputAdmitted = {
   timeCreated: number
   promotedSeq?: number
 }
+
+export type SessionDelivery = "immediate" | "deferred"
 
 export type SessionMessageAgentSwitched = {
   id: string
