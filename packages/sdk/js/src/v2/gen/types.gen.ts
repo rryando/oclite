@@ -695,6 +695,8 @@ export type QuestionTool = {
 
 export type QuestionAnswer = Array<string>
 
+export type SessionDelivery = "immediate" | "deferred"
+
 export type SessionStatus =
   | {
       type: "idle"

@@ -27,6 +27,19 @@ export function Footer() {
     if (data.type !== "session") return []
     return sync.data.session.filter((x) => x.parentID === data.sessionID)
   })
+  // Capability gate: only surface the background-subagent hint when the server
+  // supports background subagents. Mirrors oclite's env-based feature gating
+  // (see Flag.OPENCODE_EXPERIMENTAL_WORKSPACES usage in app.tsx) and the
+  // enabledByExperimental semantics in core/flag/flag.ts + effect/runtime-flags.ts:
+  // an explicit flag wins, otherwise fall back to OPENCODE_EXPERIMENTAL.
+  const backgroundSubagentsEnabled = createMemo(() => {
+    const raw = process.env["OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS"]?.toLowerCase()
+    if (raw === undefined) {
+      const experimental = process.env["OPENCODE_EXPERIMENTAL"]?.toLowerCase()
+      return experimental === "true" || experimental === "1"
+    }
+    return raw === "true" || raw === "1"
+  })
   const directory = useDirectory()
   const connected = useConnected()
 
@@ -95,7 +108,7 @@ export function Footer() {
                 {mcp()} MCP
               </text>
             </Show>
-            <Show when={subagents().length > 0}>
+            <Show when={backgroundSubagentsEnabled() && subagents().length > 0}>
               <text fg={theme.text}>
                 <span style={{ fg: theme.success }}>⊙ </span>
                 {subagents().length} subagents
