@@ -81,6 +81,9 @@ import {
 import type { EventSource } from "./context/sdk"
 import { DialogVariant } from "./component/dialog-variant"
 import { TabStrip } from "./component/tab-strip"
+import { registerOpencodeSpinner } from "./component/register-spinner"
+
+registerOpencodeSpinner()
 
 const appGlobalBindingCommands = [
   "session.list",

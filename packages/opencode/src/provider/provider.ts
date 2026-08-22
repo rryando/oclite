@@ -31,7 +31,7 @@ import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ProviderError } from "./error"
 
 const log = Log.create({ service: "provider" })
-const OPENAI_HEADER_TIMEOUT_DEFAULT = 10_000
+const OPENAI_HEADER_TIMEOUT_DEFAULT = 300_000
 function shouldUseCopilotResponsesApi(modelID: string): boolean {
   const match = /^gpt-(\d+)/.exec(modelID)
   if (!match) return false
@@ -118,6 +118,12 @@ function googleVertexAnthropicBaseURL(project: string | undefined, location: str
   return `https://aiplatform.${location}.rep.googleapis.com/v1/projects/${project}/locations/${location}/publishers/anthropic/models`
 }
 
+function googleVertexEndpoint(location: string) {
+  if (location === "global") return "aiplatform.googleapis.com"
+  if (location === "eu" || location === "us") return `aiplatform.${location}.rep.googleapis.com`
+  return `${location}-aiplatform.googleapis.com`
+}
+
 type BundledSDK = {
   languageModel(modelId: string): LanguageModelV3
 }
@@ -150,7 +156,7 @@ const BUNDLED_PROVIDERS: Record<string, () => Promise<(opts: any) => BundledSDK>
   "venice-ai-sdk-provider": () => import("venice-ai-sdk-provider").then((m) => m.createVenice),
 }
 
-type CustomModelLoader = (sdk: any, modelID: string, options?: Record<string, any>) => Promise<any>
+type CustomModelLoader = (sdk: any, modelID: string, options?: Record<string, any>, model?: Model) => Promise<any>
 type CustomVarsLoader = (options: Record<string, any>) => Record<string, string>
 type CustomDiscoverModels = () => Promise<Record<string, Model>>
 type CustomLoader = (provider: Info) => Effect.Effect<{
@@ -233,8 +239,12 @@ function custom(dep: CustomDep): Record<string, CustomLoader> {
     "github-copilot": () =>
       Effect.succeed({
         autoload: false,
-        async getModel(sdk: any, modelID: string, _options?: Record<string, any>) {
+        async getModel(sdk: any, modelID: string, _options?: Record<string, any>, model?: Model) {
           if (useLanguageModel(sdk)) return sdk.languageModel(modelID)
+          if (model && "endpoint" in model.api) {
+            if (model.api.endpoint === "responses" && sdk.responses) return sdk.responses(modelID)
+            if (model.api.endpoint === "chat" && sdk.chat) return sdk.chat(modelID)
+          }
           return shouldUseCopilotResponsesApi(modelID) ? sdk.responses(modelID) : sdk.chat(modelID)
         },
         options: {},
@@ -506,11 +516,10 @@ function custom(dep: CustomDep): Record<string, CustomLoader> {
       return {
         autoload: true,
         vars(_options: Record<string, any>) {
-          const endpoint = location === "global" ? "aiplatform.googleapis.com" : `${location}-aiplatform.googleapis.com`
           return {
             ...(project && { GOOGLE_VERTEX_PROJECT: project }),
             GOOGLE_VERTEX_LOCATION: location,
-            GOOGLE_VERTEX_ENDPOINT: endpoint,
+            GOOGLE_VERTEX_ENDPOINT: googleVertexEndpoint(location),
           }
         },
         options: {
@@ -535,11 +544,9 @@ function custom(dep: CustomDep): Record<string, CustomLoader> {
     "google-vertex-anthropic": Effect.fnUntraced(function* () {
       const env = yield* dep.env()
       const project =
-        env["GOOGLE_VERTEX_PROJECT"] ??
-        env["GOOGLE_CLOUD_PROJECT"] ??
-        env["GCP_PROJECT"] ??
-        env["GCLOUD_PROJECT"]
-      const location = env["GOOGLE_VERTEX_LOCATION"] ?? env["GOOGLE_CLOUD_LOCATION"] ?? env["VERTEX_LOCATION"] ?? "global"
+        env["GOOGLE_VERTEX_PROJECT"] ?? env["GOOGLE_CLOUD_PROJECT"] ?? env["GCP_PROJECT"] ?? env["GCLOUD_PROJECT"]
+      const location =
+        env["GOOGLE_VERTEX_LOCATION"] ?? env["GOOGLE_CLOUD_LOCATION"] ?? env["VERTEX_LOCATION"] ?? "global"
       const autoload = Boolean(project)
       if (!autoload) return { autoload: false }
       const baseURL = googleVertexAnthropicBaseURL(project, location)
@@ -997,11 +1004,17 @@ export type ConfigProvidersResult = Types.DeepMutable<Schema.Schema.Type<typeof 
 
 export function toPublicInfo(provider: Info): Info {
   return JSON.parse(
-    JSON.stringify(provider, (_, value) => {
-      if (typeof value === "function" || typeof value === "symbol" || value === undefined) return undefined
-      if (typeof value === "bigint") return value.toString()
-      return value
-    }),
+    JSON.stringify(
+      {
+        ...provider,
+        models: Object.fromEntries(Object.entries(provider.models).filter(([, model]) => Schema.is(Model)(model))),
+      },
+      (_, value) => {
+        if (typeof value === "function" || typeof value === "symbol" || value === undefined) return undefined
+        if (typeof value === "bigint") return value.toString()
+        return value
+      },
+    ),
   )
 }
 
@@ -1587,6 +1600,16 @@ export const layer = Layer.effect(
           if (baseURL) options.baseURL = baseURL
         }
 
+        if (
+          model.providerID === "google-vertex" &&
+          model.api.npm === "@ai-sdk/google-vertex" &&
+          !options.baseURL &&
+          (options.location === "eu" || options.location === "us") &&
+          typeof options.project === "string"
+        ) {
+          options.baseURL = `https://${googleVertexEndpoint(options.location)}/v1beta1/projects/${options.project}/locations/${options.location}/publishers/google`
+        }
+
         if (model.providerID === "google-vertex" && !model.api.npm.includes("@ai-sdk/openai-compatible")) {
           delete options.fetch
           // keep generateAuthToken — used by createVertexAnthropic2 for Claude models on Vertex
@@ -1770,10 +1793,15 @@ export const layer = Layer.effect(
         async () => {
           const sdk = await resolveSDK(model, s, envs)
           const language = s.modelLoaders[model.providerID]
-            ? await s.modelLoaders[model.providerID](sdk, model.api.id, {
-                ...provider.options,
-                ...model.options,
-              })
+            ? await s.modelLoaders[model.providerID](
+                sdk,
+                model.api.id,
+                {
+                  ...provider.options,
+                  ...model.options,
+                },
+                model,
+              )
             : sdk.languageModel(model.api.id)
           s.models.set(key, language)
           return language

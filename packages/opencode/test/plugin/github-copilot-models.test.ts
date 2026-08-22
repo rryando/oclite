@@ -215,6 +215,57 @@ test("clears existing variants so refreshed models calculate provider-specific v
   expect(models["claude-opus-4.7"].variants).toBeUndefined()
 })
 
+test("records advertised endpoints and PDF input media", async () => {
+  globalThis.fetch = mock(() =>
+    Promise.resolve(
+      Response.json({
+        data: [
+          {
+            model_picker_enabled: true,
+            id: "mai-code-1-flash-picker",
+            name: "MAI Code",
+            version: "mai-code-1-flash-picker-2026-07-01",
+            supported_endpoints: ["/responses"],
+            capabilities: {
+              family: "mai",
+              limits: {
+                max_context_window_tokens: 256000,
+                max_output_tokens: 128000,
+                max_prompt_tokens: 128000,
+                vision: {
+                  max_prompt_image_size: 10000000,
+                  max_prompt_images: 10,
+                  supported_media_types: ["application/pdf"],
+                },
+              },
+              supports: { streaming: true, vision: true, tool_calls: true },
+            },
+          },
+          {
+            model_picker_enabled: true,
+            id: "chat-model",
+            name: "Chat Model",
+            version: "chat-model-2026-07-01",
+            supported_endpoints: ["/chat/completions"],
+            capabilities: {
+              family: "chat",
+              limits: { max_context_window_tokens: 128000, max_output_tokens: 16000, max_prompt_tokens: 128000 },
+              supports: { streaming: true, tool_calls: true },
+            },
+          },
+        ],
+      }),
+    ),
+  ) as unknown as typeof fetch
+
+  const models = await CopilotModels.get("https://api.githubcopilot.com")
+
+  expect(models["mai-code-1-flash-picker"].api).toMatchObject({ endpoint: "responses" })
+  expect(models["mai-code-1-flash-picker"].capabilities.input.pdf).toBe(true)
+  expect(models["chat-model"].api).toMatchObject({ endpoint: "chat" })
+  expect(models["chat-model"].capabilities.input.pdf).toBe(false)
+})
+
 test("remaps fallback oauth model urls to the enterprise host", async () => {
   globalThis.fetch = mock(() => Promise.reject(new Error("timeout"))) as unknown as typeof fetch
 

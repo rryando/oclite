@@ -52,6 +52,15 @@ export const DiffStyle = Schema.Literals(["auto", "stacked"]).annotate({
   description: "Control diff rendering style: 'auto' adapts to terminal width, 'stacked' always shows single column",
 })
 
+export const Cursor = Schema.Struct({
+  style: Schema.optional(Schema.Literals(["block", "underline", "line", "default"])).annotate({
+    description: "Cursor shape. Use 'default' to preserve the terminal setting",
+  }),
+  blinking: Schema.optional(Schema.Boolean).annotate({
+    description: "Whether the cursor blinks. Has no effect when style is 'default'",
+  }),
+}).annotate({ description: "Terminal cursor settings" })
+
 export const Attention = Schema.Struct({
   enabled: Schema.optional(Schema.Boolean),
   notifications: Schema.optional(Schema.Boolean),
@@ -84,5 +93,6 @@ export const TuiInfo = Schema.Struct({
   }),
   scroll_acceleration: Schema.optional(ScrollAcceleration),
   diff_style: Schema.optional(DiffStyle),
+  cursor: Schema.optional(Cursor),
   mouse: Schema.optional(Schema.Boolean).annotate({ description: "Enable or disable mouse capture (default: true)" }),
 })

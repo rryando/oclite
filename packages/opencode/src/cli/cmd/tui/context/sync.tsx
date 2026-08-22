@@ -35,6 +35,12 @@ import path from "path"
 import { useKV } from "./kv"
 import { aggregateFailures } from "./aggregate-failures"
 
+function compareMessage(a: Message, b: Message) {
+  return a.time.created - b.time.created || a.id.localeCompare(b.id)
+}
+
+const messageKey = (message: Message) => message.time.created.toString().padStart(20, "0") + message.id
+
 export const { use: useSync, provider: SyncProvider } = createSimpleContext({
   name: "Sync",
   init: () => {
@@ -60,6 +66,14 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       }
       session_diff: {
         [sessionID: string]: Snapshot.FileDiff[]
+      }
+      session_context: {
+        [sessionID: string]: {
+          id: string
+          type: "system"
+          text: string
+          time: { created: number }
+        }[]
       }
       todo: {
         [sessionID: string]: Todo[]
@@ -98,6 +112,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       session: [],
       session_status: {},
       session_diff: {},
+      session_context: {},
       todo: {},
       message: {},
       part: {},
@@ -136,7 +151,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
         .then((x) => (x.data ?? []).toSorted((a, b) => a.id.localeCompare(b.id)))
     }
 
-    event.subscribe((event, { workspace }) => {
+    event.subscribe((event, { directory, workspace }) => {
       switch (event.type) {
         case "server.instance.disposed":
           void bootstrap()
@@ -165,6 +180,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
             void sdk.client.permission.reply({
               requestID: request.id,
               reply: "once",
+              directory,
               workspace,
             })
             break
@@ -235,6 +251,29 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           setStore("session_diff", event.properties.sessionID, event.properties.diff)
           break
 
+        case "session.next.context.updated": {
+          const epochs = store.session_context[event.properties.sessionID]
+          const epoch = {
+            id: event.properties.messageID,
+            type: "system" as const,
+            text: event.properties.text,
+            time: { created: event.properties.timestamp },
+          }
+          if (!epochs) {
+            setStore("session_context", event.properties.sessionID, [epoch])
+            break
+          }
+          if (epochs.some((item) => item.id === epoch.id)) break
+          setStore(
+            "session_context",
+            event.properties.sessionID,
+            produce((draft) => {
+              draft.unshift(epoch)
+            }),
+          )
+          break
+        }
+
         case "session.deleted": {
           const result = Binary.search(store.session, event.properties.info.id, (s) => s.id)
           if (result.found) {
@@ -285,7 +324,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
             setStore("message", event.properties.info.sessionID, [event.properties.info])
             break
           }
-          const result = Binary.search(messages, event.properties.info.id, (m) => m.id)
+          const result = Binary.search(messages, messageKey(event.properties.info), messageKey)
           if (result.found) {
             setStore("message", event.properties.info.sessionID, result.index, reconcile(event.properties.info))
             break
@@ -320,13 +359,13 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
         }
         case "message.removed": {
           const messages = store.message[event.properties.sessionID]
-          const result = Binary.search(messages, event.properties.messageID, (m) => m.id)
-          if (result.found) {
+          const index = messages.findIndex((message) => message.id === event.properties.messageID)
+          if (index !== -1) {
             setStore(
               "message",
               event.properties.sessionID,
               produce((draft) => {
-                draft.splice(result.index, 1)
+                draft.splice(index, 1)
               }),
             )
           }
@@ -575,6 +614,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
                 infos.push(message.info)
                 draft.part[message.info.id] = message.parts
               }
+              infos.sort(compareMessage)
               draft.message[sessionID] = infos
               draft.session_diff[sessionID] = diff.data ?? []
             }),

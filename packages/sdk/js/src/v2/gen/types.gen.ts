@@ -3798,8 +3798,6 @@ export type SessionInputAdmitted = {
   promotedSeq?: number
 }
 
-export type SessionDelivery = "immediate" | "deferred"
-
 export type SessionMessageAgentSwitched = {
   id: string
   metadata?: {

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect } from "bun:test"
-import { Effect, Exit, Fiber, Layer } from "effect"
+import { Cause, Effect, Exit, Fiber, Layer } from "effect"
 import { Agent } from "../../src/agent/agent"
 import { BackgroundJob } from "@/background/job"
 import { Bus } from "@/bus"
@@ -83,19 +83,29 @@ const seed = Effect.fn("TaskToolTest.seed")(function* (title = "Pinned") {
   return { chat, assistant }
 })
 
-function stubOps(opts?: { onPrompt?: (input: SessionPrompt.PromptInput) => void; text?: string }): TaskPromptOps {
+function stubOps(opts?: {
+  onPrompt?: (input: SessionPrompt.PromptInput) => void
+  text?: string
+  error?: NonNullable<MessageV2.Assistant["error"]>
+  toolError?: string
+}): TaskPromptOps {
   return {
     cancel: () => Effect.void,
     resolvePromptParts: (template) => Effect.succeed([{ type: "text" as const, text: template }]),
     prompt: (input) =>
       Effect.sync(() => {
         opts?.onPrompt?.(input)
-        return reply(input, opts?.text ?? "done")
+        return reply(input, opts?.text ?? "done", opts?.error, opts?.toolError)
       }),
   }
 }
 
-function reply(input: SessionPrompt.PromptInput, text: string): MessageV2.WithParts {
+function reply(
+  input: SessionPrompt.PromptInput,
+  text: string,
+  error?: NonNullable<MessageV2.Assistant["error"]>,
+  toolError?: string,
+): MessageV2.WithParts {
   const id = MessageID.ascending()
   return {
     info: {
@@ -112,6 +122,7 @@ function reply(input: SessionPrompt.PromptInput, text: string): MessageV2.WithPa
       providerID: input.model?.providerID ?? ref.providerID,
       time: { created: Date.now() },
       finish: "stop",
+      error,
     },
     parts: [
       {
@@ -121,6 +132,24 @@ function reply(input: SessionPrompt.PromptInput, text: string): MessageV2.WithPa
         type: "text",
         text,
       },
+      ...(toolError
+        ? [
+            {
+              id: PartID.ascending(),
+              messageID: id,
+              sessionID: input.sessionID,
+              type: "tool" as const,
+              tool: "read",
+              callID: "call-1",
+              state: {
+                status: "error" as const,
+                input: { filePath: "/external" },
+                error: toolError,
+                time: { start: Date.now(), end: Date.now() },
+              },
+            },
+          ]
+        : []),
     ],
   }
 }
@@ -238,6 +267,166 @@ describe("tool.task", () => {
       expect(result.metadata.sessionId).toBe(child.id)
       expect(result.output).toContain(`<task id="${child.id}" state="completed">`)
       expect(seen?.sessionID).toBe(child.id)
+    }),
+  )
+
+  it.instance("prevents subagents from launching subagents by default", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const { chat, assistant } = yield* seed()
+      const child = yield* sessions.create({ parentID: chat.id, title: "child" })
+      const nestedAssistant = yield* sessions.updateMessage({
+        ...assistant,
+        id: MessageID.ascending(),
+        parentID: MessageID.ascending(),
+        sessionID: child.id,
+      })
+      const def = yield* (yield* TaskTool).init()
+      let asked = false
+
+      const exit = yield* def
+        .execute(
+          {
+            description: "inspect bug",
+            prompt: "look into the cache key path",
+            subagent_type: "general",
+          },
+          {
+            sessionID: child.id,
+            messageID: nestedAssistant.id,
+            agent: "general",
+            abort: new AbortController().signal,
+            extra: { promptOps: stubOps() },
+            messages: [],
+            metadata: () => Effect.void,
+            ask: () => Effect.sync(() => (asked = true)),
+          },
+        )
+        .pipe(Effect.exit)
+
+      expect(Exit.isFailure(exit)).toBe(true)
+      expect(asked).toBe(false)
+      expect(yield* sessions.children(child.id)).toHaveLength(0)
+    }),
+  )
+
+  it.instance(
+    "allows nested subagents up to the configured depth",
+    () =>
+      Effect.gen(function* () {
+        const sessions = yield* Session.Service
+        const { chat, assistant } = yield* seed()
+        const child = yield* sessions.create({ parentID: chat.id, title: "child" })
+        const nestedAssistant = yield* sessions.updateMessage({
+          ...assistant,
+          id: MessageID.ascending(),
+          parentID: MessageID.ascending(),
+          sessionID: child.id,
+        })
+        const def = yield* (yield* TaskTool).init()
+
+        const result = yield* def.execute(
+          {
+            description: "inspect bug",
+            prompt: "look into the cache key path",
+            subagent_type: "general",
+          },
+          {
+            sessionID: child.id,
+            messageID: nestedAssistant.id,
+            agent: "general",
+            abort: new AbortController().signal,
+            extra: { promptOps: stubOps() },
+            messages: [],
+            metadata: () => Effect.void,
+            ask: () => Effect.void,
+          },
+        )
+
+        expect((yield* sessions.get(result.metadata.sessionId)).parentID).toBe(child.id)
+      }),
+    { config: { subagent_depth: 2 } },
+  )
+
+  it.instance("execute surfaces child assistant errors with a resumable task_id", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const { chat, assistant } = yield* seed()
+      const def = yield* (yield* TaskTool).init()
+
+      const exit = yield* def
+        .execute(
+          {
+            description: "inspect bug",
+            prompt: "look into the cache key path",
+            subagent_type: "general",
+          },
+          {
+            sessionID: chat.id,
+            messageID: assistant.id,
+            agent: "build",
+            abort: new AbortController().signal,
+            extra: {
+              promptOps: stubOps({
+                text: "",
+                error: new MessageV2.APIError({ message: "Network connection lost", isRetryable: false }).toObject(),
+              }),
+            },
+            messages: [],
+            metadata: () => Effect.void,
+            ask: () => Effect.void,
+          },
+        )
+        .pipe(Effect.exit)
+
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (Exit.isSuccess(exit)) throw new Error("expected task failure")
+      const child = (yield* sessions.children(chat.id))[0]
+      expect(Cause.squash(exit.cause)).toEqual(
+        new Error(`Subagent failed (task_id: ${child?.id}): Network connection lost`),
+      )
+    }),
+  )
+
+  it.instance("execute surfaces terminal child tool errors with a resumable task_id", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const { chat, assistant } = yield* seed()
+      const def = yield* (yield* TaskTool).init()
+
+      const exit = yield* def
+        .execute(
+          {
+            description: "inspect external directory",
+            prompt: "read the external directory",
+            subagent_type: "general",
+          },
+          {
+            sessionID: chat.id,
+            messageID: assistant.id,
+            agent: "build",
+            abort: new AbortController().signal,
+            extra: {
+              promptOps: stubOps({
+                text: "I will inspect the directory.",
+                toolError: "The user rejected permission to use this specific tool call.",
+              }),
+            },
+            messages: [],
+            metadata: () => Effect.void,
+            ask: () => Effect.void,
+          },
+        )
+        .pipe(Effect.exit)
+
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (Exit.isSuccess(exit)) throw new Error("expected task failure")
+      const child = (yield* sessions.children(chat.id))[0]
+      expect(Cause.squash(exit.cause)).toEqual(
+        new Error(
+          `Subagent failed (task_id: ${child?.id}): The user rejected permission to use this specific tool call.`,
+        ),
+      )
     }),
   )
 
@@ -544,6 +733,54 @@ describe("tool.task", () => {
       expect(waited.timedOut).toBe(false)
       expect(waited.info?.status).toBe("completed")
       expect(waited.info?.output).toBe("background done")
+    }),
+  )
+
+  background.instance("background tasks report child failures with a resumable task_id", () =>
+    Effect.gen(function* () {
+      const jobs = yield* BackgroundJob.Service
+      const { chat, assistant } = yield* seed()
+      const def = yield* (yield* TaskTool).init()
+      const injected = defer<SessionPrompt.PromptInput>()
+
+      const result = yield* def.execute(
+        {
+          description: "inspect bug",
+          prompt: "look into the cache key path",
+          subagent_type: "general",
+          background: true,
+        },
+        {
+          sessionID: chat.id,
+          messageID: assistant.id,
+          agent: "build",
+          abort: new AbortController().signal,
+          extra: {
+            promptOps: stubOps({
+              text: "",
+              error: new MessageV2.APIError({ message: "Network connection lost", isRetryable: false }).toObject(),
+              onPrompt: (input) => {
+                if (input.sessionID === chat.id) injected.resolve(input)
+              },
+            }),
+          },
+          messages: [],
+          metadata: () => Effect.void,
+          ask: () => Effect.void,
+        },
+      )
+
+      const waited = yield* jobs.wait({ id: result.metadata.sessionId, timeout: 1_000 })
+      expect(waited.timedOut).toBe(false)
+      expect(waited.info?.status).toBe("error")
+      expect(waited.info?.error).toBe(
+        `Subagent failed (task_id: ${result.metadata.sessionId}): Network connection lost`,
+      )
+      const notification = yield* Effect.promise(() => injected.promise)
+      expect(notification.parts[0]?.type).toBe("text")
+      expect(notification.parts[0]?.type === "text" ? notification.parts[0].text : "").toContain(
+        `<task id="${result.metadata.sessionId}" state="error">`,
+      )
     }),
   )
 

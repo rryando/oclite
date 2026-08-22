@@ -36,6 +36,18 @@ const user = Effect.fn("test.user")(function* (sessionID: SessionID, agent = "de
   })
 })
 
+const userAt = Effect.fn("test.userAt")(function* (sessionID: SessionID, id: string, created: number) {
+  const session = yield* Session.Service
+  return yield* session.updateMessage({
+    id: MessageID.make(id),
+    role: "user" as const,
+    sessionID,
+    agent: "default",
+    model: { providerID: ProviderID.make("openai"), modelID: ModelID.make("gpt-4") },
+    time: { created },
+  })
+})
+
 const assistant = Effect.fn("test.assistant")(function* (sessionID: SessionID, parentID: MessageID, dir: string) {
   const session = yield* Session.Service
   return yield* session.updateMessage({
@@ -447,6 +459,35 @@ describe("revert + compact workflow", () => {
 
           const msgs = yield* session.messages({ sessionID: sid })
           expect(msgs.length).toBe(1)
+        }),
+      { git: true },
+    ),
+  )
+
+  it.live(
+    "reverts chronological suffixes on both sides of mixed message ID ordering",
+    provideTmpdirInstance(
+      () =>
+        Effect.gen(function* () {
+          const session = yield* Session.Service
+          const revert = yield* SessionRevert.Service
+          const ids = ["msg_z9-before", "msg_z1-before-wrap", "msg_a0-after-wrap", "msg_a1-after"]
+
+          const run = Effect.fn("test.mixedIDRevert")(function* (target: number) {
+            const info = yield* session.create({})
+            for (const [index, id] of ids.entries()) {
+              const message = yield* userAt(info.id, id, index + 1)
+              yield* text(info.id, message.id, id)
+            }
+            const reverted = yield* revert.revert({ sessionID: info.id, messageID: MessageID.make(ids[target]!) })
+            yield* revert.cleanup(reverted)
+            const remaining = yield* session.messages({ sessionID: info.id })
+            yield* session.remove(info.id)
+            return remaining.map((message) => message.info.time.created)
+          })
+
+          expect(yield* run(1)).toEqual([1])
+          expect(yield* run(2)).toEqual([1, 2])
         }),
       { git: true },
     ),

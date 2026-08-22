@@ -74,9 +74,84 @@ const paid = (providers: Record<string, { models: Record<string, { cost: { input
 }
 
 const languageBaseURL = (language: unknown) => (language as { config: { baseURL: string } }).config.baseURL
+const languageURL = (language: unknown) =>
+  (language as { config: { url: (input: { path: string; modelId: string }) => string } }).config.url({
+    path: "/responses",
+    modelId: "test-model",
+  })
 
 const it = testEffect(Layer.mergeAll(Provider.defaultLayer, Env.defaultLayer, Plugin.defaultLayer))
 const experimentalModels = testEffect(providerLayer({ enableExperimentalModels: true }))
+
+test("public provider info omits models that fail the public schema", () => {
+  const provider = Provider.fromModelsDevProvider({
+    id: "test",
+    name: "Test",
+    env: [],
+    models: {
+      valid: {
+        id: "valid",
+        name: "Valid",
+        cost: { input: 1, output: 1 },
+        limit: { context: 128_000, output: 16_000 },
+      },
+    },
+  } as unknown as ModelsDev.Provider)
+  provider.models.invalid = {
+    ...provider.models.valid,
+    id: ModelID.make("invalid"),
+    cost: { ...provider.models.valid.cost, input: Number.NaN },
+  }
+
+  expect(Provider.toPublicInfo(provider).models).toEqual({ valid: provider.models.valid })
+})
+
+it.instance(
+  "Azure Cognitive Services uses the v1 endpoint by default",
+  Effect.gen(function* () {
+    yield* set("AZURE_COGNITIVE_SERVICES_RESOURCE_NAME", "test-resource")
+    yield* set("AZURE_COGNITIVE_SERVICES_API_KEY", "test-key")
+    const provider = yield* Provider.Service
+    const model = yield* provider.getModel(ProviderID.make("azure-cognitive-services"), ModelID.make("test-model"))
+
+    expect(languageURL(yield* provider.getLanguage(model))).toStartWith(
+      "https://test-resource.cognitiveservices.azure.com/openai/v1/responses?",
+    )
+  }),
+  {
+    config: {
+      provider: {
+        "azure-cognitive-services": {
+          models: { "test-model": { name: "Test Model" } },
+        },
+      },
+    },
+  },
+)
+
+it.instance(
+  "Azure Cognitive Services preserves deployment-based endpoint URLs when requested",
+  Effect.gen(function* () {
+    yield* set("AZURE_COGNITIVE_SERVICES_RESOURCE_NAME", "test-resource")
+    yield* set("AZURE_COGNITIVE_SERVICES_API_KEY", "test-key")
+    const provider = yield* Provider.Service
+    const model = yield* provider.getModel(ProviderID.make("azure-cognitive-services"), ModelID.make("test-model"))
+
+    expect(languageURL(yield* provider.getLanguage(model))).toStartWith(
+      "https://test-resource.cognitiveservices.azure.com/openai/deployments/test-model/responses?",
+    )
+  }),
+  {
+    config: {
+      provider: {
+        "azure-cognitive-services": {
+          options: { useDeploymentBasedUrls: true },
+          models: { "test-model": { name: "Test Model" } },
+        },
+      },
+    },
+  },
+)
 
 const alphaProviderConfig = {
   provider: {
@@ -1597,6 +1672,32 @@ it.instance("Google Vertex: keeps regional Claude endpoints unchanged", () =>
     const language = yield* provider.getLanguage(model)
     expect(languageBaseURL(language)).toBe(
       "https://europe-west1-aiplatform.googleapis.com/v1/projects/test-project/locations/europe-west1/publishers/anthropic/models",
+    )
+  }),
+)
+
+it.instance("Google Vertex: uses REP endpoint for Gemini continental multi-regions", () =>
+  Effect.gen(function* () {
+    yield* set("GOOGLE_VERTEX_PROJECT", "test-project")
+    yield* set("GOOGLE_VERTEX_LOCATION", "eu")
+    const provider = yield* Provider.Service
+    const model = yield* provider.getModel(ProviderID.make("google-vertex"), ModelID.make("gemini-3-flash-preview"))
+    const language = yield* provider.getLanguage(model)
+    expect(languageBaseURL(language)).toBe(
+      "https://aiplatform.eu.rep.googleapis.com/v1beta1/projects/test-project/locations/eu/publishers/google",
+    )
+  }),
+)
+
+it.instance("Google Vertex: keeps regional Gemini endpoints unchanged", () =>
+  Effect.gen(function* () {
+    yield* set("GOOGLE_VERTEX_PROJECT", "test-project")
+    yield* set("GOOGLE_VERTEX_LOCATION", "europe-west1")
+    const provider = yield* Provider.Service
+    const model = yield* provider.getModel(ProviderID.make("google-vertex"), ModelID.make("gemini-3-flash-preview"))
+    const language = yield* provider.getLanguage(model)
+    expect(languageBaseURL(language)).toBe(
+      "https://europe-west1-aiplatform.googleapis.com/v1beta1/projects/test-project/locations/europe-west1/publishers/google",
     )
   }),
 )

@@ -378,6 +378,26 @@ describe("ProviderTransform.options - gpt-5 reasoningEffort", () => {
 
     expect(result.reasoningEffort).toBeUndefined()
   })
+
+  test("gpt-5.6 completion URLs should NOT set reasoningEffort", () => {
+    const result = ProviderTransform.options({
+      model: createModel("gpt-5.6"),
+      sessionID,
+      providerOptions: { useCompletionUrls: true },
+    })
+
+    expect(result.reasoningEffort).toBeUndefined()
+  })
+
+  test("gpt-5.4 completion URLs retain reasoningEffort", () => {
+    const result = ProviderTransform.options({
+      model: createModel("gpt-5.4"),
+      sessionID,
+      providerOptions: { useCompletionUrls: true },
+    })
+
+    expect(result.reasoningEffort).toBe("medium")
+  })
 })
 
 describe("ProviderTransform.options - gateway", () => {
@@ -476,6 +496,22 @@ describe("ProviderTransform.providerOptions", () => {
 
     expect(ProviderTransform.providerOptions(model, { cachePoint: { type: "default" } })).toEqual({
       bedrock: { cachePoint: { type: "default" } },
+    })
+  })
+
+  test("forces OpenAI-family reasoning when supported or explicitly configured", () => {
+    expect(ProviderTransform.providerOptions(createModel(), { store: false })).toEqual({
+      openai: { forceReasoning: true, store: false },
+    })
+
+    const azure = createModel({
+      providerID: "azure",
+      capabilities: { ...createModel().capabilities, reasoning: false },
+      api: { id: "custom-deployment", url: "https://azure.test/openai/v1", npm: "@ai-sdk/azure" },
+    })
+    expect(ProviderTransform.providerOptions(azure, { reasoningEffort: "high" })).toEqual({
+      openai: { forceReasoning: true, reasoningEffort: "high" },
+      azure: { forceReasoning: true, reasoningEffort: "high" },
     })
   })
 
@@ -2007,6 +2043,45 @@ describe("ProviderTransform.message - strip openai metadata when store=false", (
     const result = ProviderTransform.message(msgs, anthropicModel, {}) as any[]
 
     expect(result[0].content[0].providerOptions?.openai?.itemId).toBe("msg_123")
+  })
+})
+
+describe("ProviderTransform.message - strip Copilot Responses item IDs", () => {
+  test("removes stale item IDs while preserving other Copilot metadata", () => {
+    const model = {
+      id: "github-copilot/gpt-5.5",
+      providerID: "github-copilot",
+      api: { id: "gpt-5.5", url: "https://api.githubcopilot.com", npm: "@ai-sdk/github-copilot" },
+      capabilities: {
+        temperature: true,
+        reasoning: true,
+        attachment: true,
+        toolcall: true,
+        input: { text: true, audio: false, image: true, video: false, pdf: false },
+        output: { text: true, audio: false, image: false, video: false, pdf: false },
+        interleaved: false,
+      },
+    } as any
+    const result = ProviderTransform.message(
+      [
+        {
+          role: "assistant",
+          content: [
+            {
+              type: "tool-call",
+              toolCallId: "call_1",
+              toolName: "bash",
+              input: { command: "ls" },
+              providerOptions: { copilot: { itemId: "fc_1", reasoningEncryptedContent: "encrypted" } },
+            },
+          ],
+        },
+      ] as any,
+      model,
+      { store: false },
+    ) as any
+
+    expect(result[0].content[0].providerOptions.copilot).toEqual({ reasoningEncryptedContent: "encrypted" })
   })
 })
 

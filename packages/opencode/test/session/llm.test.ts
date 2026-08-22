@@ -22,6 +22,7 @@ import { RuntimeFlags } from "@/effect/runtime-flags"
 import { Permission } from "@/permission"
 import { LLMAISDK } from "@/session/llm/ai-sdk"
 import { Session as SessionNs } from "@/session/session"
+import { ProviderError } from "@/provider/error"
 
 type ConfigModel = NonNullable<NonNullable<Config.Info["provider"]>[string]["models"]>[string]
 
@@ -349,6 +350,28 @@ describe("session.llm.ai-sdk adapter", () => {
       message: error.message,
       error,
     })
+  })
+
+  test("surfaces network_error finish reasons as retryable stream failures", async () => {
+    const error = await Effect.runPromise(
+      LLMAISDK.toLLMEvents(LLMAISDK.adapterState(), {
+        type: "finish-step",
+        response: { id: "response-network-error", timestamp: new Date(0), modelId: "test" },
+        finishReason: "other",
+        rawFinishReason: "network_error",
+        providerMetadata: undefined,
+        usage: {
+          inputTokens: 0,
+          outputTokens: 0,
+          totalTokens: 0,
+          inputTokenDetails: { noCacheTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 },
+          outputTokenDetails: { textTokens: 0, reasoningTokens: 0 },
+        },
+      }).pipe(Effect.flip),
+    )
+
+    expect(error).toBeInstanceOf(ProviderError.ResponseStreamError)
+    expect((error as Error).message).toBe("Provider finish_reason: network_error")
   })
 
   test("emits undefined usage when every AI SDK usage field is missing", async () => {

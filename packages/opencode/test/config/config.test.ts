@@ -722,6 +722,18 @@ it.instance("migrates mode field to agent field", () =>
   }),
 )
 
+it.instance("loads the subagent nesting depth", () =>
+  Effect.gen(function* () {
+    const test = yield* TestInstance
+    yield* writeConfigEffect(test.directory, {
+      $schema: "https://opencode.ai/config.json",
+      subagent_depth: 2,
+    })
+
+    expect((yield* Config.use.get()).subagent_depth).toBe(2)
+  }),
+)
+
 it.instance("loads config from .opencode directory", () =>
   Effect.gen(function* () {
     const test = yield* TestInstance

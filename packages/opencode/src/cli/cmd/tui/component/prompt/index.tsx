@@ -10,7 +10,7 @@ import {
 } from "@opentui/core"
 import type { CommandContext } from "@opentui/keymap"
 import { createEffect, createMemo, onMount, createSignal, onCleanup, on, Show, Switch, Match } from "solid-js"
-import "opentui-spinner/solid"
+import { registerOpencodeSpinner } from "../register-spinner"
 import path from "path"
 import { fileURLToPath } from "url"
 import { Filesystem } from "@/util/filesystem"
@@ -61,6 +61,8 @@ import { Flag } from "@opencode-ai/core/flag/flag"
 import { type WorkspaceStatus } from "../workspace-label"
 import { OPENCODE_BASE_MODE, useBindings, useCommandShortcut, useLeaderActive, useOpencodeKeymap } from "../../keymap"
 import { useTuiConfig } from "../../context/tui-config"
+
+registerOpencodeSpinner()
 
 export type PromptProps = {
   sessionID?: string
@@ -322,6 +324,7 @@ export function Prompt(props: PromptProps) {
     if (!input || input.isDestroyed) return
     if (props.disabled) input.cursorColor = theme.backgroundElement
     if (!props.disabled) input.cursorColor = theme.text
+    if (tuiConfig.cursor) input.cursorStyle = tuiConfig.cursor
   })
 
   const lastUserMessage = createMemo(() => {
@@ -1557,11 +1560,13 @@ export function Prompt(props: PromptProps) {
                   // setTimeout is a workaround and needs to be addressed properly
                   if (!input || input.isDestroyed) return
                   input.cursorColor = theme.text
+                  if (tuiConfig.cursor) input.cursorStyle = tuiConfig.cursor
                 }, 0)
               }}
               onMouseDown={(r: MouseEvent) => r.target?.focus()}
               focusedBackgroundColor={theme.backgroundElement}
               cursorColor={props.disabled ? theme.backgroundElement : theme.text}
+              cursorStyle={tuiConfig.cursor}
               syntaxStyle={syntax()}
             />
             <box flexDirection="row" flexShrink={0} paddingTop={1} gap={1} justifyContent="space-between">
@@ -1750,7 +1755,17 @@ export function Prompt(props: PromptProps) {
                 </box>
               )}
             </Match>
-            <Match when={true}>{props.hint ?? <text />}</Match>
+            <Match when={true}>
+              {props.hint ?? (
+                <Show when={props.sessionID ? sync.session.get(props.sessionID)?.directory : undefined}>
+                  {(directory) => (
+                    <box marginLeft={1}>
+                      <text fg={theme.textMuted}>{directory()}</text>
+                    </box>
+                  )}
+                </Show>
+              )}
+            </Match>
           </Switch>
           <Show when={status().type !== "retry"}>
             <box gap={2} flexDirection="row">

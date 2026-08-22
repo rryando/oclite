@@ -4,7 +4,7 @@ import { onMount } from "solid-js"
 import { ArgsProvider } from "../../../../src/cli/cmd/tui/context/args"
 import { createExit, ExitProvider } from "../../../../src/cli/cmd/tui/context/exit"
 import { KVProvider, useKV } from "../../../../src/cli/cmd/tui/context/kv"
-import { PermissionProvider } from "../../../../src/cli/cmd/tui/context/permission"
+import { PermissionProvider, usePermission } from "../../../../src/cli/cmd/tui/context/permission"
 import { ProjectProvider, useProject } from "../../../../src/cli/cmd/tui/context/project"
 import { SDKProvider } from "../../../../src/cli/cmd/tui/context/sdk"
 import { SyncProvider, useSync } from "../../../../src/cli/cmd/tui/context/sync"
@@ -19,7 +19,12 @@ export async function wait(fn: () => boolean, timeout = 2000) {
   }
 }
 
-type Ctx = { kv: ReturnType<typeof useKV>; project: ReturnType<typeof useProject>; sync: ReturnType<typeof useSync> }
+type Ctx = {
+  kv: ReturnType<typeof useKV>
+  permission: ReturnType<typeof usePermission>
+  project: ReturnType<typeof useProject>
+  sync: ReturnType<typeof useSync>
+}
 
 export async function mount(override?: FetchHandler) {
   const calls = createFetch(override)
@@ -27,17 +32,19 @@ export async function mount(override?: FetchHandler) {
   let sync!: ReturnType<typeof useSync>
   let project!: ReturnType<typeof useProject>
   let kv!: ReturnType<typeof useKV>
+  let permission!: ReturnType<typeof usePermission>
   let done!: () => void
   const ready = new Promise<void>((resolve) => {
     done = resolve
   })
 
   function Probe() {
-    const ctx: Ctx = { kv: useKV(), project: useProject(), sync: useSync() }
+    const ctx: Ctx = { kv: useKV(), permission: usePermission(), project: useProject(), sync: useSync() }
     onMount(() => {
       sync = ctx.sync
       project = ctx.project
       kv = ctx.kv
+      permission = ctx.permission
       done()
     })
     return <box />
@@ -63,5 +70,5 @@ export async function mount(override?: FetchHandler) {
 
   await ready
   await wait(() => sync.status === "complete")
-  return { app, emit: events.emit, kv, project, sync, session: calls.session }
+  return { app, emit: events.emit, kv, permission, project, sync, session: calls.session }
 }

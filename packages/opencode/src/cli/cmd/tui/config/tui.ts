@@ -35,7 +35,7 @@ type Acc = {
   plugin_origins: ConfigPlugin.Origin[]
 }
 
-export type Resolved = Omit<Info, "attention" | "keybinds" | "leader_timeout"> & {
+export type Resolved = Omit<Info, "attention" | "keybinds" | "leader_timeout" | "cursor"> & {
   attention: {
     enabled: boolean
     notifications: boolean
@@ -46,6 +46,10 @@ export type Resolved = Omit<Info, "attention" | "keybinds" | "leader_timeout"> &
   }
   keybinds: TuiKeybind.BindingLookupView
   leader_timeout: number
+  cursor?: {
+    style: "block" | "underline" | "line" | "default"
+    blinking: boolean
+  }
   // Internal resolved plugin list used by runtime loading.
   plugin_origins?: ConfigPlugin.Origin[]
 }
@@ -253,6 +257,12 @@ const loadState = Effect.fn("TuiConfig.loadState")(function* (ctx: { directory: 
       bindingDefaults: TuiKeybind.bindingDefaults(),
     }),
     leader_timeout: acc.result.leader_timeout ?? KeymapLeaderTimeoutDefault,
+    cursor: acc.result.cursor
+      ? {
+          style: acc.result.cursor.style ?? "block",
+          blinking: acc.result.cursor.blinking ?? true,
+        }
+      : undefined,
     plugin_origins: acc.plugin_origins.length ? acc.plugin_origins : undefined,
   }
 

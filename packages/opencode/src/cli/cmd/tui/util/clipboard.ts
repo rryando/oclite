@@ -36,11 +36,13 @@ const getClipboardy = lazy(async () => {
  */
 function writeOsc52(text: string): void {
   if (!process.stdout.isTTY) return
-  const base64 = Buffer.from(text).toString("base64")
-  const osc52 = `\x1b]52;c;${base64}\x07`
-  const passthrough = process.env["TMUX"] || process.env["STY"]
-  const sequence = passthrough ? `\x1bPtmux;\x1b${osc52}\x1b\\` : osc52
-  process.stdout.write(sequence)
+  process.stdout.write(osc52Sequence(text))
+}
+
+export function osc52Sequence(text: string, env: NodeJS.ProcessEnv = process.env) {
+  const sequence = `\x1b]52;c;${Buffer.from(text).toString("base64")}\x07`
+  const passthrough = `\x1bPtmux;\x1b${sequence}\x1b\\`
+  return env["TMUX"] ? sequence + passthrough : env["STY"] ? passthrough : sequence
 }
 
 export interface Content {
