@@ -145,18 +145,11 @@ export const fromCatalogModel = (
   const key = apiKey(resolved, credential)
   if (
     resolved.endpoint.type === "openai/responses" ||
-    (resolved.api.type === "aisdk" && ["@ai-sdk/openai", "@ai-sdk/azure", "@ai-sdk/xai"].includes(resolved.api.package))
+    (resolved.api.type === "aisdk" && ["@ai-sdk/openai", "@ai-sdk/xai"].includes(resolved.api.package))
   ) {
     return Effect.succeed(
       withDefaults(resolved, OpenAIResponses.route)
-        .with({
-          auth:
-            key === undefined
-              ? Auth.none
-              : resolved.api.type === "aisdk" && resolved.api.package === "@ai-sdk/azure"
-                ? Auth.header("api-key", key)
-                : Auth.bearer(key),
-        })
+        .with({ auth: key === undefined ? Auth.none : Auth.bearer(key) })
         .model({ id: resolved.api.id }),
     )
   }

@@ -1122,6 +1122,12 @@ export function Prompt(props: PromptProps) {
     // Filter out text parts (pasted content) since they're now expanded inline
     const nonTextParts = store.prompt.parts.filter((part) => part.type !== "text")
 
+    // Strip virtual attachment labels ([Image 1], [PDF 2]) from the input text
+    // so the model does not echo them back after the underlying attachment is
+    // stripped by unsupportedParts (the labels are replaced inline by extmark
+    // expansion; file-part extmarks leave the original label text in place).
+    inputText = inputText.replace(/\s*\[(?:Image|PDF)\s+\d+\]\s*/g, " ").replace(/\s+/g, " ").trim()
+
     // Capture mode before it gets reset
     const currentMode = store.mode
     const editorSelection = editorContext()

@@ -468,66 +468,7 @@ export const layer = Layer.effect(
           })
           yield* Effect.sleep(Duration.millis(wait))
           yield* status.set(session.id, { type: "busy" })
-
-          // Re-resolve model, agent, and permissions on retry so credential
-          // refreshes, provider config changes, and agent updates take effect.
-          const refreshedSession = yield* getSession(session.id)
-          if (refreshedSession.location.directory !== location.directory) return yield* Effect.interrupt
-          const refreshedAgent = yield* agents.select(refreshedSession.agent)
-          const refreshedModel = yield* models.resolve(refreshedSession)
-          const refreshedIsLastStep = refreshedAgent.info?.steps !== undefined && currentStep >= refreshedAgent.info.steps
-          const refreshedToolMaterialization = refreshedIsLastStep
-            ? undefined
-            : yield* tools.materialize(refreshedAgent.info?.permissions)
-          const refreshedDefinitions = [
-            ...(refreshedToolMaterialization?.definitions ?? []),
-            ...(structuredFormat
-              ? [
-                  ToolDefinition.make({
-                    name: "structured_output",
-                    description: "Return the final response in the requested structured format.",
-                    inputSchema: structuredFormat.schema,
-                    outputSchema: { type: "object" },
-                  }),
-                ]
-              : []),
-          ]
-          const refreshedSystem = yield* SessionContextEpoch.prepare(
-            db,
-            events,
-            loadSystemContext(refreshedAgent),
-            refreshedSession.id,
-          )
-          const refreshedEntries = yield* SessionHistory.entriesForRunner(db, refreshedSession.id, refreshedSystem.baselineSeq)
-          request = LLM.request({
-            model: refreshedModel,
-            http: {
-              headers: {
-                "x-session-affinity": refreshedSession.id,
-                "X-Session-Id": refreshedSession.id,
-                ...(refreshedSession.parentID ? { "x-parent-session-id": refreshedSession.parentID } : {}),
-              },
-            },
-            providerOptions: { openai: { promptCacheKey } },
-            system: [
-              refreshedAgent.info?.system,
-              refreshedSystem.baseline,
-              user?.system,
-              structuredFormat ? STRUCTURED_OUTPUT_PROMPT : undefined,
-            ]
-              .filter((part): part is string => part !== undefined && part.length > 0)
-              .map(SystemPart.make),
-            messages: [
-              ...toLLMMessages(
-                refreshedEntries.map((entry) => entry.message),
-                refreshedModel,
-              ),
-              ...(refreshedIsLastStep ? [Message.assistant(MAX_STEPS_PROMPT)] : []),
-            ],
-            tools: refreshedDefinitions,
-            toolChoice: refreshedIsLastStep ? "none" : structuredFormat ? "required" : undefined,
-          })
-          attemptedEntries = refreshedEntries
+          ;({ request, attemptedEntries } = yield* retryRebuildRequest())
           return yield* streamWithRetry(attempt + 1)
         }
         const failure = Option.getOrUndefined(Cause.findErrorOption(result.cause))
@@ -553,24 +494,39 @@ export const layer = Layer.effect(
         })
         yield* Effect.sleep(Duration.millis(wait))
         yield* status.set(session.id, { type: "busy" })
+        ;({ request, attemptedEntries } = yield* retryRebuildRequest())
+        return yield* streamWithRetry(attempt + 1)
+      })
 
-        // Re-resolve on error retry path as well — credentials may have been
-        // refreshed, provider config may have changed, or the session's model
-        // selection may have been updated while this attempt was in-flight.
+      /** Re-resolve model, agent, session permissions, system context, and
+       * history on every retry so credential refreshes, provider config changes,
+       * and agent updates take effect. Shared by both retry paths to keep the
+       * structured-output tool name and permission list consistent. */
+      const retryRebuildRequest = Effect.fnUntraced(function* () {
         const refreshedSession = yield* getSession(session.id)
         if (refreshedSession.location.directory !== location.directory) return yield* Effect.interrupt
         const refreshedAgent = yield* agents.select(refreshedSession.agent)
         const refreshedModel = yield* models.resolve(refreshedSession)
-        const refreshedIsLastStep = refreshedAgent.info?.steps !== undefined && currentStep >= refreshedAgent.info.steps
+        const refreshedIsLastStep =
+          refreshedAgent.info?.steps !== undefined && currentStep >= refreshedAgent.info.steps
+        const refreshedPermissions = yield* db
+          .select({ permission: SessionTable.permission })
+          .from(SessionTable)
+          .where(eq(SessionTable.id, refreshedSession.id))
+          .get()
+          .pipe(Effect.orDie)
         const refreshedToolMaterialization = refreshedIsLastStep
           ? undefined
-          : yield* tools.materialize(refreshedAgent.info?.permissions)
+          : yield* tools.materialize([
+              ...(refreshedAgent.info?.permissions ?? []),
+              ...(refreshedPermissions?.permission ?? []),
+            ])
         const refreshedDefinitions = [
           ...(refreshedToolMaterialization?.definitions ?? []),
-          ...(structuredFormat
+          ...(structuredFormat && !refreshedIsLastStep
             ? [
-                ToolDefinition.make({
-                  name: "structured_output",
+                new ToolDefinition({
+                  name: STRUCTURED_OUTPUT_TOOL,
                   description: "Return the final response in the requested structured format.",
                   inputSchema: structuredFormat.schema,
                   outputSchema: { type: "object" },
@@ -589,7 +545,7 @@ export const layer = Layer.effect(
           refreshedSession.id,
           refreshedSystem.baselineSeq,
         )
-        request = LLM.request({
+        const refreshed = LLM.request({
           model: refreshedModel,
           http: {
             headers: {
@@ -617,8 +573,7 @@ export const layer = Layer.effect(
           tools: refreshedDefinitions,
           toolChoice: refreshedIsLastStep ? "none" : structuredFormat ? "required" : undefined,
         })
-        attemptedEntries = refreshedEntries
-        return yield* streamWithRetry(attempt + 1)
+        return { request: refreshed, attemptedEntries: refreshedEntries }
       })
 
       return yield* Effect.uninterruptibleMask((restore) =>

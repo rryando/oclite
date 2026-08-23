@@ -230,8 +230,16 @@ export const layer = Layer.effect(
                       ? data.assistantMessageID
                       : undefined
                 if (!messageID || typeof data.sessionID !== "string") return
-                const current = yield* services.store.message(SessionMessage.ID.make(String(messageID)))
-                if (current) yield* CoreMessageProjector.project(sync, SessionID.make(data.sessionID), current.message)
+                // Skip user messages: they are already stored in the legacy DB
+                // by `promptSvc.createUserMessage()` before the core runner is
+                // invoked, and re-projecting them would either conflict (if the
+                // ID matches) or produce a duplicate (if the ID differs).
+                // Only assistant, compaction, and shell messages need projection.
+                if (messageID.startsWith("msg_") && event.type.startsWith("session.next.")) {
+                  const current = yield* services.store.message(SessionMessage.ID.make(String(messageID)))
+                  if (current && current.message.type !== "user")
+                    yield* CoreMessageProjector.project(sync, SessionID.make(data.sessionID), current.message)
+                }
               }),
             ),
           ),

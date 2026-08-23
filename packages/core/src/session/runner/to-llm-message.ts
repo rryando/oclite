@@ -194,6 +194,34 @@ ${message.recent}
   }
 }
 
-/** Translate projected V2 Session history into canonical @opencode-ai/llm context. */
-export const toLLMMessages = (messages: readonly SessionMessage.Message[], model: Model) =>
-  messages.flatMap((message) => toLLMMessage(message, model))
+/** Translate projected V2 Session history into canonical @opencode-ai/llm context.
+ * When `supportedInputs` is provided, media parts whose MIME type does not
+ * match any supported pattern are silently stripped from user messages to
+ * prevent unsupported attachments from reaching provider protocol lowering. */
+export const toLLMMessages = (
+  messages: readonly SessionMessage.Message[],
+  model: Model,
+  supportedInputs?: ReadonlyArray<string>,
+) => {
+  const converted = messages.flatMap((message) => toLLMMessage(message, model))
+  if (!supportedInputs || supportedInputs.length === 0) return converted
+  return converted.map((msg) => {
+    if (msg.role !== "user") return msg
+    const filtered = msg.content.filter((part) => {
+      if (part.type !== "media") return true
+      return supportedInputs.some((pattern) => matchMimePattern(pattern, part.mediaType))
+    })
+    return { ...msg, content: filtered }
+  })
+}
+
+/** Check whether a MIME type string matches a glob-style pattern.
+ * "image/*" matches "image/png"; "application/pdf" is exact. */
+const matchMimePattern = (pattern: string, mime: string) => {
+  if (pattern === "*") return true
+  const [type, subType = "*"] = pattern.split("/")
+  const [mimeType, mimeSub] = mime.split("/")
+  if (type !== "*" && type !== mimeType) return false
+  if (subType === "*") return true
+  return subType === mimeSub
+}
