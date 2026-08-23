@@ -3,12 +3,25 @@ import {
   ToolCallPart,
   ToolOutput,
   ToolResultPart,
+  ToolFileContent,
   type ContentPart,
   type Model,
   type ProviderMetadata,
 } from "@opencode-ai/llm"
 import { SessionMessage } from "../message"
 import type { FileAttachment } from "../prompt"
+
+/**
+ * Extract raw base64 bytes from the payload portion of a `data:` URI.
+ * Returns `undefined` if the URI is not a valid base64 data URI so the
+ * caller can fall back or skip the attachment gracefully.
+ */
+const inlineBase64 = (uri: string): string | undefined => {
+  if (!uri.startsWith("data:")) return undefined
+  const comma = uri.indexOf(",")
+  if (comma === -1) return undefined
+  return uri.slice(comma + 1)
+}
 
 const media = (file: FileAttachment): ContentPart => ({
   type: "media",
@@ -40,10 +53,25 @@ const toolResult = (tool: SessionMessage.AssistantTool, providerMetadata: Provid
   if (tool.state.status === "completed") {
     // TODO: Materialize remote and managed URIs before provider-history lowering.
     // ToolOutput.toResultValue rejects unresolved URIs rather than treating them as media bytes.
+    const attachments = (tool.state.attachments ?? [])
+      .filter((attachment) => attachment.uri.startsWith("data:"))
+      .map((attachment) => {
+        const base64 = inlineBase64(attachment.uri)
+        return base64
+          ? ToolFileContent.make({
+              type: "file",
+              source: { type: "data", data: base64 },
+              mime: attachment.mime,
+              name: attachment.name,
+            })
+          : undefined
+      })
+      .filter((a): a is ToolFileContent => a !== undefined)
+    const content = [...tool.state.content, ...attachments]
     const result =
       tool.provider?.executed === true && tool.state.result !== undefined
         ? tool.state.result
-        : ToolOutput.toResultValue({ structured: tool.state.structured, content: tool.state.content })
+        : ToolOutput.toResultValue({ structured: tool.state.structured, content })
     return ToolResultPart.make({
       id: tool.id,
       name: tool.name,

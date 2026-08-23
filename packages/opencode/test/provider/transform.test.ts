@@ -1465,7 +1465,7 @@ describe("ProviderTransform.message - empty image handling", () => {
     headers: {},
   } as any
 
-  test("should replace empty base64 image with error text", () => {
+  test("should strip empty base64 image instead of replacing with error text", () => {
     const msgs = [
       {
         role: "user",
@@ -1479,12 +1479,8 @@ describe("ProviderTransform.message - empty image handling", () => {
     const result = ProviderTransform.message(msgs, mockModel, {})
 
     expect(result).toHaveLength(1)
-    expect(result[0].content).toHaveLength(2)
+    expect(result[0].content).toHaveLength(1)
     expect(result[0].content[0]).toEqual({ type: "text", text: "What is in this image?" })
-    expect(result[0].content[1]).toEqual({
-      type: "text",
-      text: "ERROR: Image file is empty or corrupted. Please provide a valid image.",
-    })
   })
 
   test("should keep valid base64 images unchanged", () => {
@@ -1508,7 +1504,7 @@ describe("ProviderTransform.message - empty image handling", () => {
     expect(result[0].content[1]).toEqual({ type: "image", image: `data:image/png;base64,${validBase64}` })
   })
 
-  test("should handle mixed valid and empty images", () => {
+  test("should strip mixed valid and empty images — empty ones removed", () => {
     const validBase64 =
       "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
     const msgs = [
@@ -1525,13 +1521,9 @@ describe("ProviderTransform.message - empty image handling", () => {
     const result = ProviderTransform.message(msgs, mockModel, {})
 
     expect(result).toHaveLength(1)
-    expect(result[0].content).toHaveLength(3)
+    expect(result[0].content).toHaveLength(2)
     expect(result[0].content[0]).toEqual({ type: "text", text: "Compare these images" })
     expect(result[0].content[1]).toEqual({ type: "image", image: `data:image/png;base64,${validBase64}` })
-    expect(result[0].content[2]).toEqual({
-      type: "text",
-      text: "ERROR: Image file is empty or corrupted. Please provide a valid image.",
-    })
   })
 })
 

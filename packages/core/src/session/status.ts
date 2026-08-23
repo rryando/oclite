@@ -8,6 +8,28 @@ import { SessionSchema } from "./schema"
 
 export type Info = typeof SessionStatusEvent.Info.Type
 
+// Registered through EventV2.define (not the schema-package definitions) so
+// these types enter EventV2.registry; both v1 bridges drop unregistered event
+// types, which previously hid session status from the TUI on the core path.
+// Deliberately un-versioned so the bridge forwards via bus.publish, matching
+// the legacy wire shape `{ type, properties: { sessionID, status } }`.
+export const Event = {
+  Status: EventV2.define({
+    type: "session.status",
+    schema: {
+      sessionID: SessionSchema.ID,
+      status: SessionStatusEvent.Info,
+    },
+  }),
+  // deprecated
+  Idle: EventV2.define({
+    type: "session.idle",
+    schema: {
+      sessionID: SessionSchema.ID,
+    },
+  }),
+}
+
 export interface Interface {
   readonly get: (sessionID: SessionSchema.ID) => Effect.Effect<Info>
   readonly list: () => Effect.Effect<ReadonlyMap<SessionSchema.ID, Info>>
@@ -25,13 +47,13 @@ export const layer = Layer.effect(
       get: (sessionID) => Effect.succeed(statuses.get(sessionID) ?? { type: "idle" }),
       list: () => Effect.succeed(new Map(statuses)),
       set: Effect.fn("SessionStatus.set")(function* (sessionID, status) {
-        yield* events.publish(SessionStatusEvent.Status, { sessionID, status })
+        yield* events.publish(Event.Status, { sessionID, status })
         if (status.type !== "idle") {
           statuses.set(sessionID, status)
           return
         }
         statuses.delete(sessionID)
-        yield* events.publish(SessionStatusEvent.Idle, { sessionID })
+        yield* events.publish(Event.Idle, { sessionID })
       }),
     })
   }),

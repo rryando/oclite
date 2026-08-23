@@ -182,31 +182,73 @@ describe("OpenAI Chat route", () => {
     }),
   )
 
-  it.effect("rejects unsupported user media content", () =>
+  it.effect("lowers user media content into image_url entries", () =>
     Effect.gen(function* () {
-      const error = yield* LLMClient.prepare(
+      const prepared = yield* LLMClient.prepare<OpenAIChat.OpenAIChatBody>(
         LLM.request({
           id: "req_media",
           model,
-          messages: [Message.user({ type: "media", mediaType: "image/png", data: "AAECAw==" })],
+          messages: [
+            Message.user([
+              { type: "text", text: "What is this?" },
+              { type: "media", mediaType: "image/png", data: "AAECAw==" },
+            ]),
+          ],
         }),
-      ).pipe(Effect.flip)
+      )
 
-      expect(error.message).toContain("OpenAI Chat user messages only support text content for now")
+      expect(prepared.body.messages).toEqual([
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "What is this?" },
+            { type: "image_url", image_url: { url: "data:image/png;base64,AAECAw==" } },
+          ],
+        },
+      ])
     }),
   )
 
-  it.effect("rejects unsupported assistant reasoning content", () =>
+  it.effect("lowers replayed assistant reasoning into reasoning_content", () =>
     Effect.gen(function* () {
-      const error = yield* LLMClient.prepare(
+      const prepared = yield* LLMClient.prepare<OpenAIChat.OpenAIChatBody>(
         LLM.request({
           id: "req_reasoning",
           model,
-          messages: [Message.assistant({ type: "reasoning", text: "hidden" })],
+          messages: [
+            Message.assistant([
+              { type: "reasoning", text: "hidden" },
+              { type: "text", text: "visible" },
+            ]),
+          ],
         }),
-      ).pipe(Effect.flip)
+      )
 
-      expect(error.message).toContain("OpenAI Chat assistant messages only support text and tool-call content for now")
+      expect(prepared.body.messages).toEqual([
+        { role: "assistant", content: "visible", reasoning_content: "hidden" },
+      ])
+    }),
+  )
+
+  it.effect("keeps reasoning-only assistant messages with null content", () =>
+    Effect.gen(function* () {
+      const prepared = yield* LLMClient.prepare<OpenAIChat.OpenAIChatBody>(
+        LLM.request({
+          id: "req_reasoning_only",
+          model,
+          messages: [
+            Message.user("hi"),
+            Message.assistant({ type: "reasoning", text: "hidden" }),
+            Message.user("bye"),
+          ],
+        }),
+      )
+
+      expect(prepared.body.messages).toEqual([
+        { role: "user", content: "hi" },
+        { role: "assistant", content: null, reasoning_content: "hidden" },
+        { role: "user", content: "bye" },
+      ])
     }),
   )
 
@@ -276,9 +318,9 @@ describe("OpenAI Chat route", () => {
         { type: "step-start", index: 0 },
         { type: "reasoning-start", id: "reasoning-0" },
         { type: "reasoning-delta", id: "reasoning-0", text: "thinking" },
+        { type: "reasoning-end", id: "reasoning-0" },
         { type: "text-start", id: "text-0" },
         { type: "text-delta", id: "text-0", text: "Hello" },
-        { type: "reasoning-end", id: "reasoning-0" },
         { type: "text-end", id: "text-0" },
         { type: "step-finish", index: 0, reason: "stop" },
         { type: "finish", reason: "stop" },

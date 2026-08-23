@@ -115,11 +115,18 @@ const layer = Layer.effect(
       directory: string,
       model: RunInput["model"],
     ) {
+      // Race config-providers against a timeout so a slow config endpoint does not
+      // stall model-info resolution. The fallback endpoint is the models.dev catalog
+      // merged with connected providers and is always available; the config endpoint
+      // only returns slimmer connected-provider data.
       const connected = yield* Effect.promise(() =>
-        sdk.config
-          .providers({ directory })
-          .then((item) => item.data?.providers)
-          .catch(() => undefined),
+        Promise.race([
+          sdk.config
+            .providers({ directory })
+            .then((item) => item.data?.providers)
+            .catch(() => undefined),
+          new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), 2000)),
+        ]),
       )
       const providers = yield* Effect.promise(() =>
         connected

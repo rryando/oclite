@@ -1,4 +1,5 @@
 import { Agent } from "@/agent/agent"
+import { Auth } from "@/auth"
 import { Bus } from "@/bus"
 import { WorkspaceID } from "@/control-plane/schema"
 import { InstanceRef } from "@/effect/instance-ref"
@@ -19,8 +20,10 @@ import { Tool as LegacyTool } from "@/tool/tool"
 import * as LegacyDatabase from "@/storage/database"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { AgentV2 } from "@opencode-ai/core/agent"
+import { Credential } from "@opencode-ai/core/credential"
 import { Database as CoreDatabase } from "@opencode-ai/core/database/database"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { Integration } from "@opencode-ai/core/integration"
 import { EventV2 } from "@opencode-ai/core/event"
 import { Location } from "@opencode-ai/core/location"
 import { ModelV2 } from "@opencode-ai/core/model"
@@ -99,6 +102,7 @@ export const layer = Layer.effect(
     const permissions = yield* Permission.Service
     const agents = yield* Agent.Service
     const providers = yield* Provider.Service
+    const auth = yield* Auth.Service
     const projects = yield* Project.Service
     const sync = yield* SyncEvent.Service
     const bus = yield* Bus.Service
@@ -143,7 +147,16 @@ export const layer = Layer.effect(
               ModelID.make(selected.modelID),
             )
             const provider = yield* providers.getProvider(ProviderID.make(selected.providerID))
-            return yield* SessionRunnerModel.fromCatalogModel(toCoreModel(model, provider)).pipe(Effect.orDie)
+            // The core runner resolves credentials through the v2 integration
+            // registry, which the host does not populate. Translate the legacy
+            // auth store into the credential shape it expects; without this,
+            // routes are built with Auth.none and providers reject the request
+            // with HTTP 401 "Missing API key".
+            const stored = yield* auth.get(selected.providerID).pipe(Effect.orDie)
+            return yield* SessionRunnerModel.fromCatalogModel(
+              toCoreModel(model, provider),
+              toCredential(stored, provider?.key),
+            ).pipe(Effect.orDie)
           }).pipe(Effect.orDie),
         )
         // Re-open the exact database selected by the host (including test/embedded
@@ -341,6 +354,7 @@ export const defaultLayer: Layer.Layer<Service> = layer.pipe(
     Permission.defaultLayer,
     Agent.defaultLayer,
     Provider.defaultLayer,
+    Auth.defaultLayer,
     Project.defaultLayer,
     SyncEvent.defaultLayer,
     Bus.defaultLayer,
@@ -554,6 +568,20 @@ function toCoreAgent(agent: Agent.Info): AgentV2.Info {
     options: { headers: {}, body: agent.options, aisdk: { provider: {}, request: {} } },
     steps: agent.steps,
   }
+}
+
+function toCredential(stored: Auth.Info | undefined, providerKey: string | undefined): Credential.Value | undefined {
+  if (stored?.type === "api") return Credential.Key.make({ type: "key", key: stored.key })
+  if (stored?.type === "oauth")
+    return Credential.OAuth.make({
+      type: "oauth",
+      methodID: Integration.MethodID.make("default"),
+      refresh: stored.refresh,
+      access: stored.access,
+      expires: stored.expires,
+    })
+  if (!providerKey) return
+  return Credential.Key.make({ type: "key", key: providerKey })
 }
 
 function toCoreModel(model: Provider.Model, provider: Provider.Info) {

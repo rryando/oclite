@@ -399,34 +399,31 @@ function unsupportedParts(msgs: ModelMessage[], model: Provider.Model): ModelMes
   return msgs.map((msg) => {
     if (msg.role !== "user" || !Array.isArray(msg.content)) return msg
 
-    const filtered = msg.content.map((part) => {
-      if (part.type !== "file" && part.type !== "image") return part
+    const filtered = msg.content.filter((part) => {
+      if (part.type !== "file" && part.type !== "image") return true
 
-      // Check for empty base64 image data
+      // Check for empty base64 image data — strip it rather than injecting
+      // error text into the LLM context so the model does not echo it back
+      // to the user as if it were part of their original message.
       if (part.type === "image") {
         const imageStr = String(part.image)
         if (imageStr.startsWith("data:")) {
           const match = imageStr.match(/^data:([^;]+);base64,(.*)$/)
           if (match && (!match[2] || match[2].length === 0)) {
-            return {
-              type: "text" as const,
-              text: "ERROR: Image file is empty or corrupted. Please provide a valid image.",
-            }
+            return false
           }
         }
       }
 
       const mime = part.type === "image" ? String(part.image).split(";")[0].replace("data:", "") : part.mediaType
-      const filename = part.type === "file" ? part.filename : undefined
       const modality = mimeToModality(mime)
-      if (!modality) return part
-      if (model.capabilities.input[modality]) return part
+      if (!modality) return true
+      if (model.capabilities.input[modality]) return true
 
-      const name = filename ? `"${filename}"` : modality
-      return {
-        type: "text" as const,
-        text: `ERROR: Cannot read ${name} (this model does not support ${modality} input). Inform the user.`,
-      }
+      // Strip unsupported media parts from the LLM context. The prompt
+      // submission layer is responsible for surfacing the capability
+      // mismatch to the user before the model is ever called.
+      return false
     })
 
     return { ...msg, content: filtered }
