@@ -142,6 +142,13 @@ const generation = (input: RequestInput) => {
   return Object.values(result).some((value) => value !== undefined) ? result : undefined
 }
 
+const http = (input: RequestInput) => {
+  if (input.model.api.npm !== "@ai-sdk/openai") return undefined
+  const openai = input.providerOptions?.openai
+  if (!isRecord(openai) || (openai.reasoningMode !== "standard" && openai.reasoningMode !== "pro")) return undefined
+  return { body: { reasoning: { mode: openai.reasoningMode } } }
+}
+
 const baseURL = (input: Provider.Model | RequestInput) =>
   "model" in input ? (input.baseURL ?? (input.model.api.url || undefined)) : input.api.url || undefined
 
@@ -190,6 +197,7 @@ export const request = (input: RequestInput) => {
     toolChoice: input.toolChoice,
     generation: generation(input),
     providerOptions: input.providerOptions,
+    http: http(input),
   })
 }
 

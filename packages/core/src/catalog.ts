@@ -7,6 +7,9 @@ import { PluginV2 } from "./plugin"
 import { ProviderV2 } from "./provider"
 import { Location } from "./location"
 import { EventV2 } from "./event"
+import { makeLocationNode } from "./effect/app-node"
+
+export const PolicyActions = Schema.Literal("provider.use")
 
 export type ProviderRecord = {
   provider: ProviderV2.Info
@@ -355,3 +358,4 @@ export const layer = Layer.effect(
 const SMALL_MODEL_RE = /\b(nano|flash|lite|mini|haiku|small|fast)\b/
 
 export const defaultLayer = layer.pipe(Layer.provide(EventV2.defaultLayer), Layer.provide(PluginV2.defaultLayer))
+export const node = makeLocationNode({ service: Service, layer, deps: [Location.node, PluginV2.node, EventV2.node] })

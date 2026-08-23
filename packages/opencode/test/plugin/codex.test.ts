@@ -122,6 +122,38 @@ describe("plugin.codex", () => {
     })
   })
 
+  test("filters unsupported pro modes from OAuth models", async () => {
+    const hooks = await CodexAuthPlugin({} as never)
+    const limit = { context: 400_000, input: 272_000, output: 128_000 }
+    const provider = {
+      models: {
+        "gpt-5.6-sol": { id: "gpt-5.6-sol", api: { id: "gpt-5.6-sol" }, limit, cost: {}, options: {} },
+        "gpt-5.6-sol-pro": {
+          id: "gpt-5.6-sol-pro",
+          api: { id: "gpt-5.6-sol" },
+          limit,
+          cost: {},
+          options: { reasoningMode: "pro" },
+        },
+        "gpt-5.6-sol-high": {
+          id: "gpt-5.6-sol-high",
+          api: { id: "gpt-5.6-sol" },
+          limit,
+          cost: {},
+          options: { reasoningEffort: "high" },
+        },
+      },
+    }
+
+    const models = await hooks.provider!.models!(provider as never, { auth: { type: "oauth" } } as never)
+    expect(models["gpt-5.6-sol-pro"]).toBeUndefined()
+    expect(models["gpt-5.6-sol"]).toBeDefined()
+    expect(models["gpt-5.6-sol-high"]).toBeDefined()
+    expect(await hooks.provider!.models!(provider as never, { auth: { type: "api" } } as never)).toBe(
+      provider.models as never,
+    )
+  })
+
   test("installs websocket transport only when experimental websockets are enabled", async () => {
     const disabled = await CodexAuthPlugin({} as never)
     const enabled = await CodexAuthPlugin({} as never, { experimentalWebSockets: true })

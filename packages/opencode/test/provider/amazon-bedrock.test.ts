@@ -32,6 +32,15 @@ afterEach(async () => {
 
 const list = Provider.use.list()
 
+const mantleModelConfig = {
+  provider: { npm: "@ai-sdk/amazon-bedrock/mantle" },
+  limit: { context: 272_000, output: 32_000 },
+  modalities: {
+    input: ["text", "image", "pdf"] as Array<"text" | "image" | "pdf">,
+    output: ["text"] as Array<"text">,
+  },
+}
+
 const withAuthJson = (contents: string) =>
   Effect.acquireRelease(
     Effect.promise(async () => {
@@ -109,6 +118,33 @@ it.instance(
     },
   },
 )
+
+for (const testCase of [
+  { modelID: "openai.gpt-5.5", provider: "bedrock-mantle.responses" },
+  { modelID: "openai.gpt-oss-safeguard-120b", provider: "bedrock-mantle.chat" },
+]) {
+  it.instance(
+    `Bedrock Mantle: ${testCase.modelID} selects ${testCase.provider}`,
+    () =>
+      Effect.gen(function* () {
+        yield* set("AWS_BEARER_TOKEN_BEDROCK", "test-bearer-token")
+        const model = yield* Provider.use.getModel(ProviderID.amazonBedrock, testCase.modelID as never)
+        const language = yield* Provider.use.getLanguage(model)
+        expect((language as { provider: string }).provider).toBe(testCase.provider)
+        expect((language as { modelId: string }).modelId).toBe(testCase.modelID)
+      }),
+    {
+      config: {
+        provider: {
+          "amazon-bedrock": {
+            options: { region: "us-east-1" },
+            models: { [testCase.modelID]: mantleModelConfig },
+          },
+        },
+      },
+    },
+  )
+}
 
 it.instance(
   "Bedrock: includes custom endpoint in options when specified",

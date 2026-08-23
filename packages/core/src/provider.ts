@@ -2,6 +2,7 @@ export * as ProviderV2 from "./provider"
 
 import { withStatics } from "./schema"
 import { Schema } from "effect"
+import { IntegrationID } from "@opencode-ai/schema/integration-id"
 
 export const ID = Schema.String.pipe(
   Schema.brand("ProviderV2.ID"),
@@ -98,6 +99,10 @@ export class Info extends Schema.Class<Info>("ProviderV2.Info")({
   endpoint: Endpoint,
   options: Options,
 }) {
+  get integrationID() {
+    return IntegrationID.make(this.id)
+  }
+
   static empty(providerID: ID) {
     return new Info({
       id: providerID,

@@ -21,6 +21,7 @@ import { MessageID, PartID, SessionID, type SessionID as SessionIDType } from ".
 import { MessageV2 } from "../../src/session/message-v2"
 import { Database } from "@/storage/db"
 import { SessionMessageTable, SessionTable } from "@/session/session.sql"
+import { SessionContextEpochTable } from "@opencode-ai/core/session/sql"
 import { SessionMessage } from "@opencode-ai/core/session-message"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { ProviderV2 } from "@opencode-ai/core/provider"
@@ -130,6 +131,7 @@ const insertLegacyAssistantMessage = (sessionID: SessionIDType, time = 1) =>
             id: message.id,
             session_id: sessionID,
             type: message.type,
+            seq: time,
             time_created: time,
             data: {
               time: { created: time },
@@ -153,6 +155,7 @@ const insertCorruptV2Message = (sessionID: SessionIDType, time = 1) =>
             id: SessionMessage.ID.create(),
             session_id: sessionID,
             type: "assistant",
+            seq: time,
             time_created: time,
             data: {} as NonNullable<(typeof SessionMessageTable.$inferInsert)["data"]>,
           },
@@ -379,6 +382,13 @@ describe("session HttpApi", () => {
       const config = testProviderConfig(llm.url)
       const sessionDirectory = yield* tmpdirScoped({ git: true, config })
       const requestDirectory = yield* tmpdirScoped({ git: true, config })
+      const previousDatabase = Flag.OPENCODE_DB
+      Flag.OPENCODE_DB = path.join(sessionDirectory, "runner.db")
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          Flag.OPENCODE_DB = previousDatabase
+        }),
+      )
       const session = yield* createSession({ title: "directory regression" }).pipe(
         provideInstanceEffect(sessionDirectory),
       )
@@ -396,17 +406,30 @@ describe("session HttpApi", () => {
         },
       )
 
-      expect(response.status).toBe(200)
-      yield* responseJson(response)
+      const body = yield* responseJson(response)
+      expect(response.status, JSON.stringify(body)).toBe(200)
 
       const messages = yield* Session.use
         .messages({ sessionID: session.id })
         .pipe(provideInstanceEffect(sessionDirectory), Effect.orDie)
       const assistant = messages.find((message) => message.info.role === "assistant")
-      expect(assistant?.info.role === "assistant" ? assistant.info.path : undefined).toEqual({
+      const coreMessages = Database.use((db) =>
+        db.select().from(SessionMessageTable).where(eq(SessionMessageTable.session_id, session.id)).all(),
+      )
+      expect(
+        assistant?.info.role === "assistant" ? assistant.info.path : undefined,
+        JSON.stringify(coreMessages),
+      ).toEqual({
         cwd: sessionDirectory,
         root: sessionDirectory,
       })
+      const coreAssistant = coreMessages.find((message) => message.type === "assistant")
+      expect(coreAssistant).toBeDefined()
+      expect(
+        Database.use((db) =>
+          db.select().from(SessionContextEpochTable).where(eq(SessionContextEpochTable.session_id, session.id)).get(),
+        ),
+      ).toBeDefined()
     }).pipe(Effect.provide(TestLLMServer.layer), Effect.provide(CrossSpawnSpawner.defaultLayer)),
   )
 
@@ -520,7 +543,58 @@ describe("session HttpApi", () => {
   )
 
   it.instance(
-    "returns v2 public unavailable errors for unfinished session mutations",
+    "returns persisted system deltas across the compaction boundary",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const session = yield* createSession({ title: "v2 context epoch" })
+        const created = Date.now()
+        yield* Effect.sync(() =>
+          Database.use((db) => {
+            db.insert(SessionContextEpochTable)
+              .values({ session_id: session.id, baseline: "baseline", snapshot: {}, baseline_seq: 0 })
+              .run()
+            db.insert(SessionMessageTable)
+              .values([
+                {
+                  id: SessionMessage.ID.create(),
+                  session_id: session.id,
+                  type: "system",
+                  seq: 1,
+                  time_created: created,
+                  data: { text: "persisted delta", time: { created } } as NonNullable<
+                    (typeof SessionMessageTable.$inferInsert)["data"]
+                  >,
+                },
+                {
+                  id: SessionMessage.ID.create(),
+                  session_id: session.id,
+                  type: "compaction",
+                  seq: 2,
+                  time_created: created + 1,
+                  data: { reason: "auto", summary: "summary", time: { created: created + 1 } } as NonNullable<
+                    (typeof SessionMessageTable.$inferInsert)["data"]
+                  >,
+                },
+              ])
+              .run()
+          }),
+        )
+
+        const response = yield* request(`/api/session/${session.id}/context`, {
+          headers: { "x-opencode-directory": test.directory },
+        })
+        expect(response.status).toBe(200)
+        expect((yield* json<SessionMessage.Message[]>(response)).map((message) => message.type)).toEqual([
+          "system",
+          "compaction",
+        ])
+      }),
+    { git: true, config: { formatter: false, lsp: false } },
+  )
+
+  it.instance(
+    "runs v2 prompt and wait through the production session adapter",
     () =>
       Effect.gen(function* () {
         const test = yield* TestInstance
@@ -532,13 +606,8 @@ describe("session HttpApi", () => {
           headers: { ...headers, "content-type": "application/json" },
           body: JSON.stringify({ prompt: { text: "hello" } }),
         })
-        expect(prompt.status).toBe(503)
-        expect(yield* responseJson(prompt)).toEqual({
-          _tag: "ServiceUnavailableError",
-          message: "V2 session prompt is not available yet",
-          service: "v2.session.prompt",
-        })
-
+        expect(prompt.status).toBe(200)
+        expect(yield* responseJson(prompt)).toMatchObject({ type: "user", text: "hello" })
         const compact = yield* request(`/api/session/${session.id}/compact`, { method: "POST", headers })
         expect(compact.status).toBe(503)
         expect(yield* responseJson(compact)).toEqual({
@@ -548,12 +617,12 @@ describe("session HttpApi", () => {
         })
 
         const wait = yield* request(`/api/session/${session.id}/wait`, { method: "POST", headers })
-        expect(wait.status).toBe(503)
-        expect(yield* responseJson(wait)).toEqual({
-          _tag: "ServiceUnavailableError",
-          message: "V2 session wait is not available yet",
-          service: "v2.session.wait",
-        })
+        expect(wait.status).toBe(204)
+        const projected = yield* (yield* Session.Service).messages({ sessionID: session.id })
+        expect(projected.filter((message) => message.info.role === "user")).toHaveLength(1)
+        expect(projected[0]?.parts).toEqual(
+          expect.arrayContaining([expect.objectContaining({ type: "text", text: "hello" })]),
+        )
       }),
     { git: true, config: { formatter: false, lsp: false } },
   )

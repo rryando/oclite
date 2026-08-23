@@ -2,26 +2,19 @@ export * as Project from "./project"
 
 import { Context, Effect, Layer, Schema } from "effect"
 import path from "path"
-import { AbsolutePath, withStatics } from "./schema"
+import { AbsolutePath } from "./schema"
 import { AppFileSystem } from "./filesystem"
 import { Git } from "./git"
 import { Hash } from "./util/hash"
+import { ProjectSchema } from "./project/schema"
 
-export const ID = Schema.String.pipe(
-  Schema.brand("Project.ID"),
-  withStatics((schema) => ({
-    global: schema.make("global"),
-  })),
-)
-export type ID = typeof ID.Type
+export * as ProjectV2 from "./project"
 
-export const Vcs = Schema.Union([
-  Schema.Struct({
-    type: Schema.Literal("git"),
-    store: AbsolutePath,
-  }),
-])
-export type Vcs = typeof Vcs.Type
+export const ID = ProjectSchema.ID
+export type ID = ProjectSchema.ID
+
+export const Vcs = ProjectSchema.Vcs
+export type Vcs = ProjectSchema.Vcs
 
 export class Info extends Schema.Class<Info>("Project.Info")({
   id: ID,
@@ -29,15 +22,12 @@ export class Info extends Schema.Class<Info>("Project.Info")({
 }) {}
 
 export interface Interface {
-  readonly resolve: (input: AbsolutePath) => Effect.Effect<
-    {
-      previous?: ID
-      id: ID
-      directory: AbsolutePath
-      vcs?: Vcs
-    },
-    never
-  >
+  readonly resolve: (input: AbsolutePath) => Effect.Effect<{
+    previous?: ID
+    id: ID
+    directory: AbsolutePath
+    vcs?: Vcs
+  }>
   /**
    * Temporary bridge method for writing the resolved project ID to the repo-local cache.
    *

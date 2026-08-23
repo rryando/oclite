@@ -14,6 +14,7 @@ import type {
   McpResource,
   FormatterStatus,
   SessionStatus,
+  SessionMessage as V2SessionMessage,
   ProviderListResponse,
   ProviderAuthMethod,
   VcsInfo,
@@ -40,6 +41,14 @@ function compareMessage(a: Message, b: Message) {
 }
 
 const messageKey = (message: Message) => message.time.created.toString().padStart(20, "0") + message.id
+
+function systemMessages(messages: readonly V2SessionMessage[]) {
+  return messages.flatMap((message) =>
+    message.type === "system"
+      ? [{ id: message.id, type: "system" as const, text: message.text, time: { created: message.time.created } }]
+      : [],
+  )
+}
 
 export const { use: useSync, provider: SyncProvider } = createSimpleContext({
   name: "Sync",
@@ -597,11 +606,15 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           // Seed the linked set so live message/status events for this session are admitted past the
           // project filter even if its lifecycle event never arrived live (e.g. loaded at bootstrap).
           if (linked?.originSessionID) registerLinkedSession(sessionID)
-          const [session, messages, todo, diff] = await Promise.all([
+          const [session, messages, todo, diff, context] = await Promise.all([
             sdk.client.session.get({ sessionID, directory }, { throwOnError: true }),
             sdk.client.session.messages({ sessionID, directory, limit: 100 }),
             sdk.client.session.todo({ sessionID, directory }),
             sdk.client.session.diff({ sessionID, directory }),
+            sdk.client.v2.session
+              .context({ sessionID, directory })
+              .then((response) => response.data?.data ?? [])
+              .catch(() => []),
           ])
           setStore(
             produce((draft) => {
@@ -616,6 +629,14 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
               }
               infos.sort(compareMessage)
               draft.message[sessionID] = infos
+              const liveContext = draft.session_context[sessionID] ?? []
+              const liveIDs = new Set(liveContext.map((message) => message.id))
+              draft.session_context[sessionID] = [
+                ...liveContext,
+                ...systemMessages(context)
+                  .reverse()
+                  .filter((message) => !liveIDs.has(message.id)),
+              ]
               draft.session_diff[sessionID] = diff.data ?? []
             }),
           )

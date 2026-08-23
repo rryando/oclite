@@ -634,6 +634,7 @@ export type Prompt = {
   files?: Array<PromptFileAttachment>
   agents?: Array<PromptAgentAttachment>
   references?: Array<PromptReferenceAttachment>
+  format?: OutputFormat
 }
 
 export type Pty = {
@@ -3761,6 +3762,7 @@ export type AgentV2Info = {
 export type SessionV2Info = {
   id: string
   parentID?: string
+  originSessionID?: string
   projectID: string
   agent?: string
   model?: {
@@ -3784,6 +3786,12 @@ export type SessionV2Info = {
     archived?: number
   }
   title: string
+  summary?: {
+    additions: number
+    deletions: number
+    files: number
+    diffs?: Array<SnapshotFileDiff>
+  }
   location: LocationRef
   subpath?: string
 }
@@ -3838,6 +3846,7 @@ export type SessionMessageUser = {
   files?: Array<PromptFileAttachment>
   agents?: Array<PromptAgentAttachment>
   references?: Array<PromptReferenceAttachment>
+  format?: OutputFormat
   type: "user"
 }
 
@@ -4134,6 +4143,75 @@ export type SkillV2Info = {
   location: string
   content: string
 }
+
+export type IntegrationWhen = {
+  key: string
+  op: "eq" | "neq"
+  value: string
+}
+
+export type IntegrationTextPrompt = {
+  type: "text"
+  key: string
+  message: string
+  placeholder?: string
+  when?: IntegrationWhen
+}
+
+export type IntegrationSelectPrompt = {
+  type: "select"
+  key: string
+  message: string
+  options: Array<{ label: string; value: string; hint?: string }>
+  when?: IntegrationWhen
+}
+
+export type IntegrationOAuthMethod = {
+  id: string
+  type: "oauth"
+  label: string
+  prompts?: Array<IntegrationTextPrompt | IntegrationSelectPrompt>
+}
+
+export type IntegrationKeyMethod = { type: "key"; label?: string }
+export type IntegrationEnvMethod = { type: "env"; names: Array<string> }
+export type IntegrationMethod = IntegrationOAuthMethod | IntegrationKeyMethod | IntegrationEnvMethod
+export type IntegrationInputs = { [key: string]: string }
+export type IntegrationRef = { id: string; name: string }
+
+export type ConnectionCredentialInfo = { type: "credential"; id: string; label: string }
+export type ConnectionEnvInfo = { type: "env"; name: string }
+export type ConnectionInfo = ConnectionCredentialInfo | ConnectionEnvInfo
+
+export type CredentialOAuth = {
+  type: "oauth"
+  methodID: string
+  refresh: string
+  access: string
+  expires: number
+  metadata?: { [key: string]: unknown }
+}
+export type CredentialKey = { type: "key"; key: string; metadata?: { [key: string]: unknown } }
+export type CredentialValue = CredentialOAuth | CredentialKey
+
+export type ReferenceLocalSource = {
+  type: "local"
+  path: string
+  description?: string
+  hidden?: boolean
+}
+export type ReferenceGitSource = {
+  type: "git"
+  repository: string
+  branch?: string
+  description?: string
+  hidden?: boolean
+}
+
+export type SkillV2DirectorySource = { type: "directory"; path: string }
+export type SkillV2UrlSource = { type: "url"; url: string }
+export type SkillV2EmbeddedSource = { type: "embedded"; skill: SkillV2Info }
+export type SkillV2Source = SkillV2DirectorySource | SkillV2UrlSource | SkillV2EmbeddedSource
 
 export type QuestionV2Request = {
   id: string

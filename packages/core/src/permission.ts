@@ -16,6 +16,8 @@ export type Rule = typeof Rule.Type
 export const Ruleset = Schema.Array(Rule).annotate({ identifier: "PermissionV2.Ruleset" })
 export type Ruleset = typeof Ruleset.Type
 
+export class DeclinedError extends Schema.TaggedErrorClass<DeclinedError>()("PermissionV2.DeclinedError", {}) {}
+
 const EDIT_TOOLS = ["edit", "write", "apply_patch"]
 
 export function evaluate(permission: string, pattern: string, ...rulesets: Ruleset[]): Rule {

@@ -26,6 +26,7 @@ function resolveLocation(options: Record<string, any>) {
 
 function vertexEndpoint(location: string) {
   if (location === "global") return "aiplatform.googleapis.com"
+  if (location === "eu" || location === "us") return `aiplatform.${location}.rep.googleapis.com`
   return `${location}-aiplatform.googleapis.com`
 }
 
@@ -95,6 +96,11 @@ export const GoogleVertexPlugin = PluginV2.define({
           ...options,
           project,
           location,
+          ...((location === "eu" || location === "us") && project && !evt.options.baseURL
+            ? {
+                baseURL: `https://${vertexEndpoint(location)}/v1beta1/projects/${project}/locations/${location}/publishers/google`,
+              }
+            : {}),
         })
       }),
       "aisdk.language": Effect.fn(function* (evt) {

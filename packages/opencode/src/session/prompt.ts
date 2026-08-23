@@ -54,13 +54,15 @@ import { ProviderV2 } from "@opencode-ai/core/provider"
 import { AgentAttachment, FileAttachment, ReferenceAttachment, Source } from "@opencode-ai/core/session-prompt"
 import { Reference } from "@/reference/reference"
 import * as DateTime from "effect/DateTime"
-import { eq } from "@/storage/db"
-import * as Database from "@/storage/db"
+import { eq } from "@/storage/database"
+import * as Database from "@/storage/database"
 import { SessionTable } from "./session.sql"
 import { referencePromptMetadata, referenceTextPart } from "./prompt/reference"
 import { SessionReminders } from "./reminders"
 import { SessionTools } from "./tools"
 import { LLMEvent } from "@opencode-ai/llm"
+import { CoreSession } from "@/effect/core-session"
+import { SessionMessage as CoreSessionMessage } from "@opencode-ai/core/session/message"
 
 // @ts-ignore
 globalThis.AI_SDK_LOG_WARNINGS = false
@@ -129,6 +131,7 @@ export const layer = Layer.effect(
     const references = yield* Reference.Service
     const events = yield* EventV2Bridge.Service
     const flags = yield* RuntimeFlags.Service
+    const core = Option.getOrUndefined(yield* Effect.serviceOption(CoreSession.Service))
     const ops = Effect.fn("SessionPrompt.ops")(function* () {
       return {
         cancel: (sessionID: SessionID) => cancel(sessionID),
@@ -139,6 +142,10 @@ export const layer = Layer.effect(
 
     const cancel = Effect.fn("SessionPrompt.cancel")(function* (sessionID: SessionID) {
       yield* elog.info("cancel", { sessionID })
+      if (core && !flags.legacySessionRunner) {
+        const ctx = yield* InstanceState.context
+        yield* (yield* core.current(ctx.directory)).execution.interrupt(sessionID)
+      }
       yield* state.cancel(sessionID)
     })
 
@@ -735,26 +742,46 @@ export const layer = Layer.effect(
       }
 
       if (current?.agent !== info.agent) {
-        yield* events.publish(SessionEvent.AgentSwitched, {
-          sessionID: input.sessionID,
-          timestamp: DateTime.makeUnsafe(info.time.created),
-          agent: info.agent,
-        })
+        if (core && !flags.legacySessionRunner)
+          Database.use((db) =>
+            db.update(SessionTable).set({ agent: info.agent }).where(eq(SessionTable.id, input.sessionID)).run(),
+          )
+        else
+          yield* events.publish(SessionEvent.AgentSwitched, {
+            sessionID: input.sessionID,
+            timestamp: DateTime.makeUnsafe(info.time.created),
+            agent: info.agent,
+          })
       }
       if (
         current?.model?.providerID !== info.model.providerID ||
         current.model.id !== info.model.modelID ||
         (current.model.variant === "default" ? undefined : current.model.variant) !== info.model.variant
       ) {
-        yield* events.publish(SessionEvent.ModelSwitched, {
-          sessionID: input.sessionID,
-          timestamp: DateTime.makeUnsafe(info.time.created),
-          model: {
-            id: ModelV2.ID.make(info.model.modelID),
-            providerID: ProviderV2.ID.make(info.model.providerID),
-            variant: ModelV2.VariantID.make(info.model.variant ?? "default"),
-          },
-        })
+        if (core && !flags.legacySessionRunner)
+          Database.use((db) =>
+            db
+              .update(SessionTable)
+              .set({
+                model: {
+                  id: info.model.modelID,
+                  providerID: info.model.providerID,
+                  variant: info.model.variant,
+                },
+              })
+              .where(eq(SessionTable.id, input.sessionID))
+              .run(),
+          )
+        else
+          yield* events.publish(SessionEvent.ModelSwitched, {
+            sessionID: input.sessionID,
+            timestamp: DateTime.makeUnsafe(info.time.created),
+            model: {
+              id: ModelV2.ID.make(info.model.modelID),
+              providerID: ProviderV2.ID.make(info.model.providerID),
+              variant: ModelV2.VariantID.make(info.model.variant ?? "default"),
+            },
+          })
       }
 
       yield* Effect.addFinalizer(() => instruction.clear(info.id))
@@ -1186,7 +1213,7 @@ export const layer = Layer.effect(
         },
       )
       // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
-      if (flags.experimentalEventSystem) {
+      if (flags.experimentalEventSystem && (!core || flags.legacySessionRunner)) {
         yield* events.publish(SessionEvent.Prompted, {
           sessionID: input.sessionID,
           timestamp: DateTime.makeUnsafe(info.time.created),
@@ -1200,7 +1227,7 @@ export const layer = Layer.effect(
       }
       for (const text of nextPrompt.synthetic) {
         // TODO(v2): Temporary dual-write while migrating session messages to v2 events.
-        if (flags.experimentalEventSystem) {
+        if (flags.experimentalEventSystem && (!core || flags.legacySessionRunner)) {
           yield* events.publish(SessionEvent.Synthetic, {
             sessionID: input.sessionID,
             timestamp: DateTime.makeUnsafe(info.time.created),
@@ -1209,7 +1236,20 @@ export const layer = Layer.effect(
         }
       }
 
-      return { info, parts }
+      return {
+        info,
+        parts,
+        prompt: {
+          text: parts
+            .filter((part): part is MessageV2.TextPart => part.type === "text")
+            .map((part) => part.text)
+            .join("\n"),
+          files: nextPrompt.files,
+          agents: nextPrompt.agents,
+          format: info.format,
+          system: info.system,
+        },
+      }
     }, Effect.scoped)
 
     const prompt: (input: PromptInput) => Effect.Effect<MessageV2.WithParts, Image.Error> = Effect.fn(
@@ -1229,7 +1269,36 @@ export const layer = Layer.effect(
         yield* sessions.setPermission({ sessionID: session.id, permission: permissions })
       }
 
-      if (input.noReply === true) return message
+      if (input.noReply === true) {
+        if (core && !flags.legacySessionRunner) {
+          const ctx = yield* InstanceState.context
+          yield* (yield* core.current(ctx.directory)).admit({
+            sessionID: input.sessionID,
+            messageID: CoreSessionMessage.ID.make(message.info.id),
+            prompt: message.prompt,
+          })
+        }
+        return message
+      }
+      if (core && !flags.legacySessionRunner) {
+        const ctx = yield* InstanceState.context
+        const agent = yield* agents.get(message.info.agent)
+        const model = yield* getModel(message.info.model.providerID, message.info.model.modelID, input.sessionID)
+        const [skills, environment, instructions] = yield* Effect.all([
+          sys.skills(agent),
+          sys.environment(model),
+          instruction.system().pipe(Effect.orDie),
+        ])
+        yield* (yield* core.current(ctx.directory)).prompt({
+          sessionID: input.sessionID,
+          messageID: CoreSessionMessage.ID.make(message.info.id),
+          prompt: {
+            ...message.prompt,
+            system: [...environment, ...instructions, skills, message.prompt.system].filter(Boolean).join("\n"),
+          },
+        })
+        return yield* lastAssistant(input.sessionID)
+      }
       return yield* loop({ sessionID: input.sessionID })
     })
 
@@ -1500,6 +1569,11 @@ export const layer = Layer.effect(
     const loop: (input: LoopInput) => Effect.Effect<MessageV2.WithParts> = Effect.fn("SessionPrompt.loop")(function* (
       input: LoopInput,
     ) {
+      if (core && !flags.legacySessionRunner) {
+        const ctx = yield* InstanceState.context
+        yield* (yield* core.current(ctx.directory)).execution.resume(input.sessionID).pipe(Effect.orDie)
+        return yield* lastAssistant(input.sessionID)
+      }
       return yield* state.ensureRunning(input.sessionID, lastAssistant(input.sessionID), runLoop(input.sessionID))
     })
 
@@ -1627,6 +1701,7 @@ export const layer = Layer.effect(
       return result
     })
 
+    if (core) core.setPromptOps(yield* ops())
     return Service.of({
       cancel,
       prompt,
@@ -1639,39 +1714,43 @@ export const layer = Layer.effect(
 )
 
 export const defaultLayer = Layer.suspend(() =>
-  layer.pipe(
-    Layer.provide(SessionRunState.defaultLayer),
-    Layer.provide(SessionStatus.defaultLayer),
-    Layer.provide(SessionCompaction.defaultLayer),
-    Layer.provide(SessionProcessor.defaultLayer),
-    Layer.provide(Command.defaultLayer),
-    Layer.provide(Permission.defaultLayer),
-    Layer.provide(MCP.defaultLayer),
-    Layer.provide(LSP.defaultLayer),
-    Layer.provide(ToolRegistry.defaultLayer),
-    Layer.provide(Truncate.defaultLayer),
-    Layer.provide(Provider.defaultLayer),
-    Layer.provide(Config.defaultLayer),
-    Layer.provide(Instruction.defaultLayer),
-    Layer.provide(AppFileSystem.defaultLayer),
-    Layer.provide(Plugin.defaultLayer),
-    Layer.provide(Session.defaultLayer),
-    Layer.provide(SessionRevert.defaultLayer),
-    Layer.provide(SessionSummary.defaultLayer),
-    Layer.provide(Image.defaultLayer),
-    Layer.provide(
-      Layer.mergeAll(
-        EventV2Bridge.defaultLayer,
-        Agent.defaultLayer,
-        SystemPrompt.defaultLayer,
-        LLM.defaultLayer,
-        Reference.defaultLayer,
-        Bus.layer,
-        CrossSpawnSpawner.defaultLayer,
-        RuntimeFlags.defaultLayer,
+  layer
+    .pipe(
+      Layer.provide(SessionRunState.defaultLayer),
+      Layer.provide(CoreSession.defaultLayer),
+      Layer.provide(SessionStatus.defaultLayer),
+      Layer.provide(SessionCompaction.defaultLayer),
+      Layer.provide(SessionProcessor.defaultLayer),
+      Layer.provide(Command.defaultLayer),
+      Layer.provide(Permission.defaultLayer),
+      Layer.provide(MCP.defaultLayer),
+      Layer.provide(LSP.defaultLayer),
+      Layer.provide(ToolRegistry.defaultLayer),
+      Layer.provide(Truncate.defaultLayer),
+      Layer.provide(Provider.defaultLayer),
+      Layer.provide(Config.defaultLayer),
+      Layer.provide(Instruction.defaultLayer),
+      Layer.provide(AppFileSystem.defaultLayer),
+      Layer.provide(Plugin.defaultLayer),
+      Layer.provide(Session.defaultLayer),
+      Layer.provide(SessionRevert.defaultLayer),
+      Layer.provide(SessionSummary.defaultLayer),
+      Layer.provide(Image.defaultLayer),
+    )
+    .pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          EventV2Bridge.defaultLayer,
+          Agent.defaultLayer,
+          SystemPrompt.defaultLayer,
+          LLM.defaultLayer,
+          Reference.defaultLayer,
+          Bus.layer,
+          CrossSpawnSpawner.defaultLayer,
+          RuntimeFlags.defaultLayer,
+        ),
       ),
     ),
-  ),
 )
 const ModelRef = Schema.Struct({
   providerID: ProviderID,

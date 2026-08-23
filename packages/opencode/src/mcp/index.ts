@@ -7,6 +7,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { UnauthorizedError } from "@modelcontextprotocol/sdk/client/auth.js"
 import {
   CallToolResultSchema,
+  type CallToolResult,
   ListToolsResultSchema,
   ToolSchema,
   type Tool as MCPToolDef,
@@ -34,6 +35,7 @@ import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 
 const log = Log.create({ service: "mcp" })
 const DEFAULT_TIMEOUT = 30_000
+const MAX_LIST_PAGES = 1_000
 
 const TolerantListToolsResultSchema = ListToolsResultSchema.extend({
   tools: ToolSchema.omit({ outputSchema: true }).array(),
@@ -106,6 +108,7 @@ const pendingOAuthTransports = new Map<string, TransportWithAuth>()
 // Prompt cache types
 type PromptInfo = Awaited<ReturnType<MCPClient["listPrompts"]>>["prompts"][number]
 type ResourceInfo = Awaited<ReturnType<MCPClient["listResources"]>>["resources"][number]
+type ResourceTemplateInfo = Awaited<ReturnType<MCPClient["listResourceTemplates"]>>["resourceTemplates"][number]
 type McpEntry = NonNullable<Config.Info["mcp"]>[string]
 
 function isMcpConfigured(entry: McpEntry): entry is ConfigMCP.Info {
@@ -125,33 +128,47 @@ function isOutputSchemaValidationError(error: Error) {
   )
 }
 
+async function paginate<T, R extends { nextCursor?: string }>(
+  list: (cursor?: string) => Promise<R>,
+  items: (result: R) => T[],
+) {
+  const result: T[] = []
+  const cursors = new Set<string>()
+  let cursor: string | undefined
+
+  for (let index = 0; index < MAX_LIST_PAGES; index++) {
+    const page = await list(cursor)
+    result.push(...items(page))
+    if (page.nextCursor === undefined) return result
+    if (cursors.has(page.nextCursor)) throw new Error(`MCP list returned duplicate cursor: ${page.nextCursor}`)
+    cursors.add(page.nextCursor)
+    cursor = page.nextCursor
+  }
+
+  throw new Error(`MCP list exceeded ${MAX_LIST_PAGES} pages`)
+}
+
 function listTools(key: string, client: MCPClient, timeout: number) {
   return Effect.tryPromise({
-    try: () => client.listTools(undefined, { timeout }),
+    try: () =>
+      paginate(
+        async (cursor) => {
+          const params = cursor === undefined ? undefined : { cursor }
+          try {
+            return await client.listTools(params, { timeout })
+          } catch (error) {
+            if (!(error instanceof Error) || !isOutputSchemaValidationError(error)) throw error
+            log.warn("failed to validate MCP tool output schemas, retrying without output schema validation", {
+              key,
+              error,
+            })
+            return client.request({ method: "tools/list", params }, TolerantListToolsResultSchema, { timeout })
+          }
+        },
+        (result) => result.tools,
+      ),
     catch: (err) => (err instanceof Error ? err : new Error(String(err))),
-  }).pipe(
-    Effect.map((result) => result.tools),
-    Effect.catch((error) => {
-      if (!isOutputSchemaValidationError(error)) return Effect.fail(error)
-
-      log.warn("failed to validate MCP tool output schemas, retrying without output schema validation", { key, error })
-      return Effect.tryPromise({
-        try: () =>
-          client.request({ method: "tools/list" }, TolerantListToolsResultSchema, {
-            timeout,
-          }),
-        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
-      }).pipe(
-        Effect.map((result) =>
-          result.tools.map((tool) => ({
-            name: tool.name,
-            description: tool.description,
-            inputSchema: tool.inputSchema,
-          })),
-        ),
-      )
-    }),
-  )
+  })
 }
 
 // Convert MCP tool definition to AI SDK Tool type
@@ -169,8 +186,8 @@ function convertMcpTool(mcpTool: MCPToolDef, client: MCPClient, timeout?: number
   return dynamicTool({
     description: mcpTool.description ?? "",
     inputSchema: jsonSchema(schema),
-    execute: async (args: unknown) => {
-      return client.callTool(
+    execute: async (args: unknown, options) => {
+      const result = (await client.callTool(
         {
           name: mcpTool.name,
           arguments: (args || {}) as Record<string, unknown>,
@@ -178,9 +195,25 @@ function convertMcpTool(mcpTool: MCPToolDef, client: MCPClient, timeout?: number
         CallToolResultSchema,
         {
           resetTimeoutOnProgress: true,
+          signal: options.abortSignal,
           timeout,
+          // The SDK only sends a progress token when this hook is present, enabling timeout resets.
+          onprogress: () => {},
         },
-      )
+      )) as CallToolResult
+      if (result.isError)
+        throw new Error(
+          result.content
+            .flatMap((item) => (item.type === "text" ? [item.text] : []))
+            .filter((text) => text.trim())
+            .join("\n\n") || "MCP tool returned an error",
+        )
+      if (result.content.length > 0 || result.structuredContent === undefined || result.structuredContent === null)
+        return result
+      return {
+        ...result,
+        content: [{ type: "text" as const, text: JSON.stringify(result.structuredContent) }],
+      }
     },
   })
 }
@@ -246,6 +279,7 @@ export interface Interface {
   readonly tools: () => Effect.Effect<Record<string, Tool>>
   readonly prompts: () => Effect.Effect<Record<string, PromptInfo & { client: string }>>
   readonly resources: () => Effect.Effect<Record<string, ResourceInfo & { client: string }>>
+  readonly resourceTemplates?: () => Effect.Effect<Record<string, ResourceTemplateInfo & { client: string }>>
   readonly add: (name: string, mcp: ConfigMCP.Info) => Effect.Effect<{ status: Record<string, Status> | Status }>
   readonly connect: (name: string) => Effect.Effect<void, NotFoundError>
   readonly disconnect: (name: string) => Effect.Effect<void, NotFoundError>
@@ -704,30 +738,67 @@ export const layer = Layer.effect(
 
     function collectFromConnected<T extends { name: string }>(
       s: State,
-      listFn: (c: Client) => Promise<T[]>,
+      listFn: (client: Client, timeout?: number) => Promise<T[]>,
       label: string,
     ) {
-      return Effect.forEach(
-        Object.entries(s.clients).filter(([name]) => s.status[name]?.status === "connected"),
-        ([clientName, client]) =>
-          fetchFromClient(clientName, client, listFn, label).pipe(Effect.map((items) => Object.entries(items ?? {}))),
-        { concurrency: "unbounded" },
-      ).pipe(Effect.map((results) => Object.fromEntries<T & { client: string }>(results.flat())))
+      return Effect.gen(function* () {
+        const config = (yield* cfgSvc.get()).mcp ?? {}
+        return yield* Effect.forEach(
+          Object.entries(s.clients).filter(([name]) => s.status[name]?.status === "connected"),
+          ([clientName, client]) => {
+            const configured = config[clientName]
+            const entry = configured && isMcpConfigured(configured) ? configured : s.config[clientName]
+            return fetchFromClient(clientName, client, (current) => listFn(current, entry?.timeout), label).pipe(
+              Effect.map((items) => Object.entries(items ?? {})),
+            )
+          },
+          { concurrency: "unbounded" },
+        ).pipe(Effect.map((results) => Object.fromEntries<T & { client: string }>(results.flat())))
+      })
     }
 
     const prompts = Effect.fn("MCP.prompts")(function* () {
       const s = yield* InstanceState.get(state)
-      return yield* collectFromConnected(s, (c) => c.listPrompts().then((r) => r.prompts), "prompts")
+      return yield* collectFromConnected(
+        s,
+        (client, timeout) =>
+          paginate(
+            (cursor) => client.listPrompts(cursor === undefined ? undefined : { cursor }, { timeout }),
+            (result) => result.prompts,
+          ),
+        "prompts",
+      )
     })
 
     const resources = Effect.fn("MCP.resources")(function* () {
       const s = yield* InstanceState.get(state)
-      return yield* collectFromConnected(s, (c) => c.listResources().then((r) => r.resources), "resources")
+      return yield* collectFromConnected(
+        s,
+        (client, timeout) =>
+          paginate(
+            (cursor) => client.listResources(cursor === undefined ? undefined : { cursor }, { timeout }),
+            (result) => result.resources,
+          ),
+        "resources",
+      )
+    })
+
+    const resourceTemplates = Effect.fn("MCP.resourceTemplates")(function* () {
+      const s = yield* InstanceState.get(state)
+      return yield* collectFromConnected(
+        s,
+        (client, timeout) =>
+          paginate(
+            (cursor) => client.listResourceTemplates(cursor === undefined ? undefined : { cursor }, { timeout }),
+            (result) => result.resourceTemplates,
+          ),
+        "resource templates",
+      )
     })
 
     const withClient = Effect.fnUntraced(function* <A>(
       clientName: string,
-      fn: (client: MCPClient) => Promise<A>,
+      fn: (client: MCPClient, timeout?: number) => Promise<A>,
       label: string,
       meta?: Record<string, unknown>,
     ) {
@@ -737,11 +808,17 @@ export const layer = Layer.effect(
         log.warn(`client not found for ${label}`, { clientName })
         return undefined
       }
+      const configured = (yield* cfgSvc.get()).mcp?.[clientName]
+      const entry = configured && isMcpConfigured(configured) ? configured : s.config[clientName]
       return yield* Effect.tryPromise({
-        try: () => fn(client),
-        catch: (e: any) => {
-          log.error(`failed to ${label}`, { clientName, ...meta, error: e?.message })
-          return e
+        try: () => fn(client, entry?.timeout),
+        catch: (error) => {
+          log.error(`failed to ${label}`, {
+            clientName,
+            ...meta,
+            error: error instanceof Error ? error.message : String(error),
+          })
+          return error
         },
       }).pipe(Effect.orElseSucceed(() => undefined))
     })
@@ -751,15 +828,21 @@ export const layer = Layer.effect(
       name: string,
       args?: Record<string, string>,
     ) {
-      return yield* withClient(clientName, (client) => client.getPrompt({ name, arguments: args }), "getPrompt", {
-        promptName: name,
-      })
+      return yield* withClient(
+        clientName,
+        (client, timeout) => client.getPrompt({ name, arguments: args }, { timeout }),
+        "getPrompt",
+        { promptName: name },
+      )
     })
 
     const readResource = Effect.fn("MCP.readResource")(function* (clientName: string, resourceUri: string) {
-      return yield* withClient(clientName, (client) => client.readResource({ uri: resourceUri }), "readResource", {
-        resourceUri,
-      })
+      return yield* withClient(
+        clientName,
+        (client, timeout) => client.readResource({ uri: resourceUri }, { timeout }),
+        "readResource",
+        { resourceUri },
+      )
     })
 
     const getMcpConfig = Effect.fnUntraced(function* (mcpName: string) {
@@ -950,6 +1033,7 @@ export const layer = Layer.effect(
       tools,
       prompts,
       resources,
+      resourceTemplates,
       add,
       connect,
       disconnect,

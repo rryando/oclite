@@ -163,7 +163,7 @@ describe("GoogleVertexPlugin", () => {
     ),
   )
 
-  it.effect("keeps OpenAI-compatible Vertex endpoint templates regional for eu", () =>
+  it.effect("uses REP for OpenAI-compatible Vertex endpoint templates in continental multi-regions", () =>
     Effect.gen(function* () {
       const plugin = yield* PluginV2.Service
       const catalog = yield* Catalog.Service
@@ -184,8 +184,30 @@ describe("GoogleVertexPlugin", () => {
       expect(provider.endpoint).toEqual({
         type: "aisdk",
         package: "@ai-sdk/openai-compatible",
-        url: "https://eu-aiplatform.googleapis.com/v1/projects/config-project/locations/eu",
+        url: "https://aiplatform.eu.rep.googleapis.com/v1/projects/config-project/locations/eu",
       })
+    }),
+  )
+
+  it.effect("uses REP for native Gemini SDKs in continental multi-regions", () =>
+    Effect.gen(function* () {
+      vertexOptions.length = 0
+      const plugin = yield* PluginV2.Service
+      yield* plugin.add(GoogleVertexPlugin)
+      yield* plugin.trigger(
+        "aisdk.sdk",
+        {
+          model: model("google-vertex", "gemini-3-flash-preview", {
+            endpoint: { type: "aisdk", package: "@ai-sdk/google-vertex" },
+          }),
+          package: "@ai-sdk/google-vertex",
+          options: { name: "google-vertex", project: "config-project", location: "us" },
+        },
+        {},
+      )
+      expect(vertexOptions[0].baseURL).toBe(
+        "https://aiplatform.us.rep.googleapis.com/v1beta1/projects/config-project/locations/us/publishers/google",
+      )
     }),
   )
 

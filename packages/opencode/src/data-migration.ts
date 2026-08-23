@@ -1,5 +1,5 @@
 import { Context, Effect, Layer } from "effect"
-import { Database } from "./storage/db"
+import { Database } from "./storage/database"
 import { DataMigrationTable } from "./data-migration.sql"
 import * as Log from "@opencode-ai/core/util/log"
 import { and, asc, eq, gt, inArray, sql } from "drizzle-orm"

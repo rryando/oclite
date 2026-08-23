@@ -168,13 +168,20 @@ export interface GenerateMethod {
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/LLMClient") {}
 
-const resolveRequestOptions = (request: LLMRequest) =>
-  LLMRequest.update(request, {
+const resolveRequestOptions = (request: LLMRequest) => {
+  const modelDefaults = request.model.defaults
+  return LLMRequest.update(request, {
     generation:
-      mergeGenerationOptions(request.model.route.defaults.generation, request.generation) ?? new GenerationOptions({}),
-    providerOptions: mergeProviderOptions(request.model.route.defaults.providerOptions, request.providerOptions),
-    http: mergeHttpOptions(request.model.route.defaults.http, request.http),
+      mergeGenerationOptions(request.model.route.defaults.generation, modelDefaults?.generation, request.generation) ??
+      new GenerationOptions({}),
+    providerOptions: mergeProviderOptions(
+      request.model.route.defaults.providerOptions,
+      modelDefaults?.providerOptions,
+      request.providerOptions,
+    ),
+    http: mergeHttpOptions(request.model.route.defaults.http, modelDefaults?.http, request.http),
   })
+}
 
 export interface MakeInput<Body, Frame, Event, State> {
   /** Route id used in diagnostics and prepared request metadata. */

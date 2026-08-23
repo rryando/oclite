@@ -151,6 +151,85 @@ describe("tui sync", () => {
     }
   })
 
+  test("hydrates linked persisted context and deduplicates the matching live event", async () => {
+    const previous = Global.Path.state
+    await using tmp = await tmpdir()
+    Global.Path.state = tmp.path
+    await Bun.write(`${tmp.path}/kv.json`, "{}")
+    const sessionID = "ses_persisted_context"
+    const session = {
+      id: sessionID,
+      slug: "persisted-context",
+      projectID: "proj_linked",
+      directory: "/tmp/linked",
+      originSessionID: "ses_origin",
+      title: "Persisted context",
+      version: "1.18.21",
+      time: { created: 1, updated: 1 },
+    }
+    let contextDirectory: string | null = null
+    let releaseContext!: () => void
+    const contextResponse = new Promise<void>((resolve) => {
+      releaseContext = resolve
+    })
+    const { app, emit, sync } = await mount((url) => {
+      if (url.pathname === `/session/${sessionID}`) return json(session)
+      if (url.pathname === `/session/${sessionID}/messages`) return json([])
+      if (url.pathname === `/session/${sessionID}/todo`) return json([])
+      if (url.pathname === `/session/${sessionID}/diff`) return json([])
+      if (url.pathname === `/api/session/${sessionID}/context`) {
+        contextDirectory = url.searchParams.get("directory")
+        return contextResponse.then(() =>
+          json({
+            data: [{ id: "msg_context", type: "system", text: "persisted context", time: { created: 42 } }],
+          }),
+        )
+      }
+      if (url.pathname === "/session") return json([session])
+      return undefined
+    })
+
+    try {
+      const syncing = sync.session.sync(sessionID)
+      await wait(() => contextDirectory !== null)
+      expect(contextDirectory as string | null).toBe("/tmp/linked")
+
+      emit(
+        event(
+          {
+            id: "evt_context_replayed",
+            type: "session.next.context.updated",
+            properties: { sessionID, messageID: "msg_context", text: "persisted context", timestamp: 42 },
+          },
+          "proj_linked",
+        ),
+      )
+      releaseContext()
+      await syncing
+
+      expect(sync.data.session_context[sessionID]).toEqual([
+        { id: "msg_context", type: "system", text: "persisted context", time: { created: 42 } },
+      ])
+
+      emit(
+        event(
+          {
+            id: "evt_context_replayed_again",
+            type: "session.next.context.updated",
+            properties: { sessionID, messageID: "msg_context", text: "persisted context", timestamp: 42 },
+          },
+          "proj_linked",
+        ),
+      )
+      await Bun.sleep(20)
+
+      expect(sync.data.session_context[sessionID]).toHaveLength(1)
+    } finally {
+      app.renderer.destroy()
+      Global.Path.state = previous
+    }
+  })
+
   test("admits linked session interactive and state events without admitting unrelated projects", async () => {
     const previous = Global.Path.state
     await using tmp = await tmpdir()

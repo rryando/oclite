@@ -419,6 +419,17 @@ describe("session.llm-native.request", () => {
     ).toEqual({ type: "unsupported", reason: "provider is not openai, opencode, or anthropic" })
     expect(
       LLMNativeRuntime.status({
+        model: {
+          ...baseModel,
+          providerID: ProviderID.make("azure"),
+          api: { ...baseModel.api, npm: "@ai-sdk/azure" },
+        },
+        provider: { ...providerInfo, id: ProviderID.make("azure") },
+        auth: undefined,
+      }),
+    ).toEqual({ type: "unsupported", reason: "provider is not openai, opencode, or anthropic" })
+    expect(
+      LLMNativeRuntime.status({
         model: baseModel,
         provider: providerInfo,
         auth: { type: "oauth", refresh: "refresh", access: "access", expires: 1 },
@@ -447,6 +458,36 @@ describe("session.llm-native.request", () => {
         auth: undefined,
       }),
     ).toEqual({ type: "unsupported", reason: "API key is not configured" })
+  })
+
+  test("keeps Cerebras on the AI SDK runtime", () => {
+    expect(
+      LLMNativeRuntime.status({
+        model: {
+          ...baseModel,
+          providerID: ProviderID.make("cerebras"),
+          api: { ...baseModel.api, npm: "@ai-sdk/cerebras" },
+        },
+        provider: { ...providerInfo, id: ProviderID.make("cerebras") },
+        auth: undefined,
+      }),
+    ).toEqual({ type: "unsupported", reason: "provider is not openai, opencode, or anthropic" })
+  })
+
+  test("keeps Bedrock and Mantle on the AI SDK runtime", () => {
+    for (const npm of ["@ai-sdk/amazon-bedrock", "@ai-sdk/amazon-bedrock/mantle"]) {
+      expect(
+        LLMNativeRuntime.status({
+          model: {
+            ...baseModel,
+            providerID: ProviderID.make("amazon-bedrock"),
+            api: { ...baseModel.api, npm },
+          },
+          provider: { ...providerInfo, id: ProviderID.make("amazon-bedrock") },
+          auth: undefined,
+        }),
+      ).toEqual({ type: "unsupported", reason: "provider is not openai, opencode, or anthropic" })
+    }
   })
 
   test("enables native runtime for Anthropic API-key models", () => {
@@ -670,7 +711,7 @@ describe("session.llm-native.request", () => {
         llmClient,
         messages: [{ role: "user", content: "hello" }],
         tools: {},
-        providerOptions: { instructions: "You are concise." },
+        providerOptions: { instructions: "You are concise.", reasoningMode: "pro" },
         headers: {},
         abort: new AbortController().signal,
       })
@@ -685,6 +726,7 @@ describe("session.llm-native.request", () => {
           model: "gpt-5-mini",
           instructions: "You are concise.",
           input: [{ role: "user", content: [{ type: "input_text", text: "hello" }] }],
+          reasoning: { mode: "pro" },
         },
       })
       expect(events).toEqual(

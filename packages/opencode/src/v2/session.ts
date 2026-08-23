@@ -1,8 +1,8 @@
 import { SessionMessageTable, SessionTable } from "@/session/session.sql"
 import { SessionID } from "@/session/schema"
 import { WorkspaceID } from "@/control-plane/schema"
-import { and, asc, desc, eq, gt, gte, isNull, like, lt, or, type SQL } from "@/storage/db"
-import * as Database from "@/storage/db"
+import { and, asc, desc, eq, gt, gte, isNull, like, lt, ne, or, type SQL } from "@/storage/database"
+import * as Database from "@/storage/database"
 import { Context, DateTime, Effect, Layer, Schema } from "effect"
 import { SessionMessage } from "@opencode-ai/core/session-message"
 import type { Prompt } from "@opencode-ai/core/session-prompt"
@@ -14,6 +14,16 @@ import { EventV2 } from "@opencode-ai/core/event"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { ProviderV2 } from "@opencode-ai/core/provider"
+import { ProjectV2 } from "@opencode-ai/core/project"
+import { WorkspaceV2 } from "@opencode-ai/core/workspace"
+import { SessionContextEpochTable } from "@opencode-ai/core/session/sql"
+import { SessionTable as CoreSessionTable } from "@opencode-ai/core/session/sql"
+import { SessionInput } from "@opencode-ai/core/session/input"
+import { SessionMessage as CoreSessionMessage } from "@opencode-ai/core/session/message"
+import { CoreSession } from "@/effect/core-session"
+import { Session } from "@/session/session"
+import { SessionCompaction } from "@/session/compaction"
+import { ModelID, ProviderID } from "@/provider/schema"
 
 export const Delivery = Schema.Literals(["immediate", "deferred"]).annotate({
   identifier: "Session.Delivery",
@@ -25,6 +35,7 @@ export const DefaultDelivery = "immediate" satisfies Delivery
 export class Info extends Schema.Class<Info>("Session.Info")({
   id: SessionID,
   parentID: optionalOmitUndefined(SessionID),
+  originSessionID: optionalOmitUndefined(SessionID),
   projectID: ProjectID,
   workspaceID: optionalOmitUndefined(WorkspaceID),
   path: optionalOmitUndefined(Schema.String),
@@ -82,6 +93,7 @@ export interface Interface {
     agent?: string
     model?: ModelV2.Ref
     parentID?: SessionID
+    originSessionID?: SessionID
     workspaceID?: WorkspaceID
   }) => Effect.Effect<Info>
   readonly get: (sessionID: SessionID) => Effect.Effect<Info, NotFoundError>
@@ -132,14 +144,18 @@ export interface Interface {
   readonly switchModel: (input: { sessionID: SessionID; model: ModelV2.Ref }) => Effect.Effect<void, never>
   readonly compact: (sessionID: SessionID) => Effect.Effect<void, NotFoundError | OperationUnavailableError>
   readonly wait: (sessionID: SessionID) => Effect.Effect<void, NotFoundError | OperationUnavailableError>
+  readonly abort: (sessionID: SessionID) => Effect.Effect<void, NotFoundError>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/v2/Session") {}
 
-export const layer = Layer.effect(
+const serviceLayer = Layer.effect(
   Service,
   Effect.gen(function* () {
     const events = yield* EventV2Bridge.Service
+    const core = yield* CoreSession.Service
+    const sessions = yield* Session.Service
+    const compaction = yield* SessionCompaction.Service
     const decodeMessage = Schema.decodeUnknownEffect(SessionMessage.Message)
 
     const decode = (row: typeof SessionMessageTable.$inferSelect) =>
@@ -160,6 +176,7 @@ export const layer = Layer.effect(
         workspaceID: row.workspace_id ? WorkspaceID.make(row.workspace_id) : undefined,
         title: row.title,
         parentID: row.parent_id ? SessionID.make(row.parent_id) : undefined,
+        originSessionID: row.origin_session_id ? SessionID.make(row.origin_session_id) : undefined,
         path: row.path ?? "",
         agent: row.agent ?? undefined,
         model: row.model
@@ -188,8 +205,23 @@ export const layer = Layer.effect(
     }
 
     const result = Service.of({
-      create: Effect.fn("V2Session.create")(function* (_input) {
-        return {} as any
+      create: Effect.fn("V2Session.create")(function* (input) {
+        const created = yield* sessions.create({
+          agent: input?.agent,
+          model: input?.model
+            ? {
+                providerID: ProviderID.make(input.model.providerID),
+                id: ModelID.make(input.model.id),
+                variant: input.model.variant,
+              }
+            : undefined,
+          parentID: input?.parentID,
+          originSessionID: input?.originSessionID,
+          workspaceID: input?.workspaceID,
+        })
+        return fromRow(
+          Database.use((db) => db.select().from(SessionTable).where(eq(SessionTable.id, created.id)).get()!),
+        )
       }),
       get: Effect.fn("V2Session.get")(function* (sessionID) {
         const row = Database.use((db) => db.select().from(SessionTable).where(eq(SessionTable.id, sessionID)).get())
@@ -283,11 +315,16 @@ export const layer = Layer.effect(
         yield* result.get(sessionID)
         const rows = Database.use((db) => {
           const compaction = db
-            .select()
+            .select({ seq: SessionMessageTable.seq })
             .from(SessionMessageTable)
             .where(and(eq(SessionMessageTable.session_id, sessionID), eq(SessionMessageTable.type, "compaction")))
-            .orderBy(desc(SessionMessageTable.time_created), desc(SessionMessageTable.id))
+            .orderBy(desc(SessionMessageTable.seq))
             .limit(1)
+            .get()
+          const epoch = db
+            .select({ baselineSeq: SessionContextEpochTable.baseline_seq })
+            .from(SessionContextEpochTable)
+            .where(eq(SessionContextEpochTable.session_id, sessionID))
             .get()
 
           return db
@@ -298,23 +335,66 @@ export const layer = Layer.effect(
                 eq(SessionMessageTable.session_id, sessionID),
                 compaction
                   ? or(
-                      gt(SessionMessageTable.time_created, compaction.time_created),
-                      and(
-                        eq(SessionMessageTable.time_created, compaction.time_created),
-                        gte(SessionMessageTable.id, compaction.id),
-                      ),
+                      gte(SessionMessageTable.seq, compaction.seq),
+                      epoch
+                        ? and(eq(SessionMessageTable.type, "system"), gt(SessionMessageTable.seq, epoch.baselineSeq))
+                        : undefined,
                     )
+                  : undefined,
+                epoch
+                  ? or(ne(SessionMessageTable.type, "system"), gt(SessionMessageTable.seq, epoch.baselineSeq))
                   : undefined,
               ),
             )
-            .orderBy(asc(SessionMessageTable.time_created), asc(SessionMessageTable.id))
+            .orderBy(asc(SessionMessageTable.seq))
             .all()
         })
         return yield* Effect.forEach(rows, (row) => decode(row))
       }),
       prompt: Effect.fn("V2Session.prompt")(function* (input) {
         yield* result.get(input.sessionID)
-        return yield* new OperationUnavailableError({ operation: "prompt" })
+        const directory = Database.use((db) =>
+          db
+            .select({ directory: SessionTable.directory })
+            .from(SessionTable)
+            .where(eq(SessionTable.id, input.sessionID))
+            .get(),
+        )?.directory
+        if (!directory) return yield* new NotFoundError({ sessionID: input.sessionID })
+        const runtime = yield* core.current(directory)
+        const row = Database.use((db) =>
+          db.select().from(SessionTable).where(eq(SessionTable.id, input.sessionID)).get(),
+        )!
+        yield* runtime.db.run("PRAGMA foreign_keys = OFF").pipe(Effect.orDie)
+        yield* runtime.db
+          .insert(CoreSessionTable)
+          .values([
+            {
+              ...row,
+              project_id: ProjectV2.ID.make(row.project_id),
+              workspace_id: row.workspace_id ? WorkspaceV2.ID.make(row.workspace_id) : null,
+              revert: null,
+            },
+          ])
+          .onConflictDoNothing()
+          .run()
+          .pipe(Effect.orDie, Effect.ensuring(runtime.db.run("PRAGMA foreign_keys = ON").pipe(Effect.orDie)))
+        const responseID = input.id ?? EventV2.ID.create()
+        const admitted = yield* SessionInput.admit(runtime.db, runtime.events, {
+          id: CoreSessionMessage.ID.make(String(responseID).replace(/^evt_/, "msg_")),
+          sessionID: input.sessionID,
+          prompt: input.prompt,
+          delivery: input.delivery === "deferred" ? "queue" : "steer",
+        })
+        yield* runtime.execution.wake(input.sessionID)
+        return SessionMessage.User.make({
+          id: responseID,
+          type: "user",
+          text: admitted.prompt.text,
+          files: admitted.prompt.files,
+          agents: admitted.prompt.agents,
+          time: { created: admitted.timeCreated },
+        })
       }),
       shell: Effect.fn("V2Session.shell")(function* (_input) {}),
       skill: Effect.fn("V2Session.skill")(function* (_input) {}),
@@ -354,12 +434,42 @@ export const layer = Layer.effect(
         }).pipe(Effect.forkChild())
       }),
       compact: Effect.fn("V2Session.compact")(function* (sessionID) {
-        yield* result.get(sessionID)
-        return yield* new OperationUnavailableError({ operation: "compact" })
+        const session = yield* sessions.get(sessionID).pipe(Effect.mapError(() => new NotFoundError({ sessionID })))
+        const agent = session.agent ?? "build"
+        const model = session.model
+        if (!model) return yield* new OperationUnavailableError({ operation: "compact" })
+        yield* compaction.create({
+          sessionID,
+          agent,
+          model: { providerID: model.providerID, modelID: model.id },
+          auto: false,
+        })
       }),
       wait: Effect.fn("V2Session.wait")(function* (sessionID) {
         yield* result.get(sessionID)
-        return yield* new OperationUnavailableError({ operation: "wait" })
+        const directory = Database.use((db) =>
+          db
+            .select({ directory: SessionTable.directory })
+            .from(SessionTable)
+            .where(eq(SessionTable.id, sessionID))
+            .get(),
+        )?.directory
+        if (!directory) return yield* new NotFoundError({ sessionID })
+        const execution = (yield* core.current(directory)).execution
+        if (!(yield* execution.active).has(sessionID)) return
+        yield* execution.resume(sessionID).pipe(Effect.exit, Effect.asVoid)
+      }),
+      abort: Effect.fn("V2Session.abort")(function* (sessionID) {
+        yield* result.get(sessionID)
+        const directory = Database.use((db) =>
+          db
+            .select({ directory: SessionTable.directory })
+            .from(SessionTable)
+            .where(eq(SessionTable.id, sessionID))
+            .get(),
+        )?.directory
+        if (!directory) return yield* new NotFoundError({ sessionID })
+        yield* (yield* core.current(directory)).execution.interrupt(sessionID)
       }),
     })
 
@@ -367,6 +477,13 @@ export const layer = Layer.effect(
   }),
 )
 
-export const defaultLayer = layer.pipe(Layer.provide(EventV2Bridge.defaultLayer))
+export const layer: Layer.Layer<Service> = serviceLayer.pipe(
+  Layer.provide(EventV2Bridge.defaultLayer),
+  Layer.provide(CoreSession.defaultLayer),
+  Layer.provide(Session.defaultLayer),
+  Layer.provide(SessionCompaction.defaultLayer),
+)
+
+export const defaultLayer = layer
 
 export * as SessionV2 from "./session"

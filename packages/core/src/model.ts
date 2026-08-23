@@ -36,7 +36,7 @@ export const Cost = Schema.Struct({
 export const Ref = Schema.Struct({
   id: ID,
   providerID: ProviderV2.ID,
-  variant: VariantID,
+  variant: VariantID.pipe(Schema.optional),
 })
 export type Ref = typeof Ref.Type
 
@@ -68,6 +68,27 @@ export class Info extends Schema.Class<Info>("ModelV2.Info")({
     output: Schema.Int,
   }),
 }) {
+  get api() {
+    if (this.endpoint.type === "aisdk")
+      return {
+        id: this.apiID,
+        type: "aisdk" as const,
+        package: this.endpoint.package,
+        url: this.endpoint.url,
+        settings: this.options.aisdk.provider,
+      }
+    return {
+      id: this.apiID,
+      type: "native" as const,
+      url: "url" in this.endpoint ? this.endpoint.url : undefined,
+      settings: this.options.aisdk.provider,
+    }
+  }
+
+  get request() {
+    return { headers: this.options.headers, body: this.options.body, variant: this.options.variant }
+  }
+
   static empty(providerID: ProviderV2.ID, modelID: ID) {
     return new Info({
       id: modelID,

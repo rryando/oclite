@@ -2,7 +2,7 @@ import { eq } from "drizzle-orm"
 import { serviceUse } from "@opencode-ai/core/effect/service-use"
 import { Effect, Layer, Option, Schema, Context } from "effect"
 
-import { Database } from "@/storage/db"
+import { Database } from "@/storage/database"
 import { AccountStateTable, AccountTable } from "./account.sql"
 import { AccessToken, AccountID, AccountRepoError, Info, OrgID, RefreshToken } from "./schema"
 import { normalizeServerUrl } from "./url"

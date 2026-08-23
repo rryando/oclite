@@ -12,6 +12,7 @@
   },
   "exports": {
     ".": "./src/index.ts",
+    "./internal": "./src/internal.ts",
     "./*": "./src/*.ts"
   },
   "devDependencies": {

@@ -1,7 +1,9 @@
 import { and, eq, sql } from "drizzle-orm"
-import { Database } from "@/storage/db"
+import { Database } from "@/storage/database"
 import { ProjectTable } from "./project.sql"
-import { PermissionTable, SessionTable } from "../session/session.sql"
+import { SessionTable } from "../session/session.sql"
+import { PermissionTable } from "@opencode-ai/core/permission/sql"
+import { PermissionSaved } from "@opencode-ai/core/permission/saved"
 import { WorkspaceTable } from "../control-plane/workspace.sql"
 import * as Log from "@opencode-ai/core/util/log"
 import { Flag } from "@opencode-ai/core/flag/flag"
@@ -85,10 +87,6 @@ export function fromRow(row: Row): Info {
     sandboxes: row.sandboxes,
     commands: row.commands ?? undefined,
   }
-}
-
-function mergePermissionRules<T extends readonly unknown[]>(oldRules: T, newRules: T): T {
-  return [...new Map([...oldRules, ...newRules].map((rule) => [JSON.stringify(rule), rule])).values()] as unknown as T
 }
 
 export const UpdateInput = Schema.Struct({
@@ -202,21 +200,25 @@ export const layer = Layer.effect(
                 .run()
             }
 
-            const oldPermission = d.select().from(PermissionTable).where(eq(PermissionTable.project_id, oldID)).get()
-            const newPermission = d.select().from(PermissionTable).where(eq(PermissionTable.project_id, newID)).get()
-            if (oldPermission && newPermission) {
-              d.update(PermissionTable)
-                .set({
-                  data: mergePermissionRules(oldPermission.data, newPermission.data),
-                  time_created: Math.min(oldPermission.time_created, newPermission.time_created),
-                  time_updated: Date.now(),
-                })
-                .where(eq(PermissionTable.project_id, newID))
+            const oldCoreID = ProjectV2.ID.make(oldID)
+            const newCoreID = ProjectV2.ID.make(newID)
+            const oldPermissions = d
+              .select()
+              .from(PermissionTable)
+              .where(eq(PermissionTable.project_id, oldCoreID))
+              .all()
+            if (oldPermissions.length) {
+              d.insert(PermissionTable)
+                .values(
+                  oldPermissions.map((permission) => ({
+                    ...permission,
+                    id: PermissionSaved.ID.create(),
+                    project_id: newCoreID,
+                  })),
+                )
+                .onConflictDoNothing()
                 .run()
-              d.delete(PermissionTable).where(eq(PermissionTable.project_id, oldID)).run()
-            }
-            if (oldPermission && !newPermission) {
-              d.update(PermissionTable).set({ project_id: newID }).where(eq(PermissionTable.project_id, oldID)).run()
+              d.delete(PermissionTable).where(eq(PermissionTable.project_id, oldCoreID)).run()
             }
 
             d.update(SessionTable)

@@ -10,7 +10,8 @@ import { ProjectID } from "../../src/project/schema"
 import { Database } from "@/storage/db"
 import { ProjectTable } from "@/project/project.sql"
 import { SessionTable } from "@/session/session.sql"
-import { PermissionTable } from "@/session/session.sql"
+import { PermissionTable } from "@opencode-ai/core/permission/sql"
+import { PermissionSaved } from "@opencode-ai/core/permission/saved"
 import { WorkspaceTable } from "@/control-plane/workspace.sql"
 import { eq } from "drizzle-orm"
 import { Hash } from "@opencode-ai/core/util/hash"
@@ -218,8 +219,10 @@ describe("Project.fromDirectory", () => {
             .run()
           db.insert(PermissionTable)
             .values({
-              project_id: rootProject.id,
-              data: [{ permission: "edit", pattern: "*", action: "allow" }],
+              id: PermissionSaved.ID.create(),
+              project_id: ProjectV2.ID.make(rootProject.id),
+              action: "edit",
+              resource: "*",
               time_created: Date.now(),
               time_updated: Date.now(),
             })
@@ -246,7 +249,13 @@ describe("Project.fromDirectory", () => {
         Database.use((db) => db.select().from(SessionTable).where(eq(SessionTable.id, sessionID)).get())?.project_id,
       ).toBe(remoteID)
       expect(
-        Database.use((db) => db.select().from(PermissionTable).where(eq(PermissionTable.project_id, remoteID)).get()),
+        Database.use((db) =>
+          db
+            .select()
+            .from(PermissionTable)
+            .where(eq(PermissionTable.project_id, ProjectV2.ID.make(remoteID)))
+            .get(),
+        ),
       ).toBeDefined()
       expect(
         Database.use((db) => db.select().from(WorkspaceTable).where(eq(WorkspaceTable.id, workspaceID)).get())

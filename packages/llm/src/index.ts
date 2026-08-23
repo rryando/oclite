@@ -17,6 +17,8 @@ export type {
   Tool as ToolShape,
   ToolExecute,
   ToolExecuteContext,
+  ToolModelOutputInput,
+  ToolToModelOutput,
   Tools,
   ToolSchema,
 } from "./tool"
@@ -33,3 +35,4 @@ export type {
   ModelFactory as ProviderModelFactory,
   ModelOptions as ProviderModelOptions,
 } from "./provider"
+export { isContextOverflow, isContextOverflowFailure } from "./provider-error"

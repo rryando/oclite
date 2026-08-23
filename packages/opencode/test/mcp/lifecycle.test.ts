@@ -8,6 +8,7 @@ import { testEffect } from "../lib/effect"
 // Per-client state for controlling mock behavior
 interface MockClientState {
   tools: Array<{ name: string; description?: string; inputSchema: object; outputSchema?: object }>
+  toolPages?: Record<string, { items: MockClientState["tools"]; nextCursor?: string }>
   listToolsCalls: number
   requestCalls: number
   listToolsShouldFail: boolean
@@ -15,7 +16,12 @@ interface MockClientState {
   listPromptsShouldFail: boolean
   listResourcesShouldFail: boolean
   prompts: Array<{ name: string; description?: string }>
+  promptPages?: Record<string, { items: MockClientState["prompts"]; nextCursor?: string }>
   resources: Array<{ name: string; uri: string; description?: string }>
+  resourcePages?: Record<string, { items: MockClientState["resources"]; nextCursor?: string }>
+  resourceTemplates: Array<{ name: string; uriTemplate: string; description?: string }>
+  resourceTemplatePages?: Record<string, { items: MockClientState["resourceTemplates"]; nextCursor?: string }>
+  callToolOptions?: unknown
   closed: boolean
   notificationHandlers: Map<unknown, (...args: any[]) => any>
 }
@@ -44,6 +50,7 @@ function getOrCreateClientState(name?: string): MockClientState {
       listResourcesShouldFail: false,
       prompts: [],
       resources: [],
+      resourceTemplates: [],
       closed: false,
       notificationHandlers: new Map(),
     }
@@ -133,32 +140,54 @@ void mock.module("@modelcontextprotocol/sdk/client/index.js", () => ({
       this._state?.notificationHandlers.set(schema, handler)
     }
 
-    async listTools() {
+    async listTools(params?: { cursor?: string }) {
       if (this._state) this._state.listToolsCalls++
       if (this._state?.listToolsShouldFail) {
         throw new Error(this._state.listToolsError)
       }
-      return { tools: this._state?.tools ?? [] }
+      const page = this._state?.toolPages?.[params?.cursor ?? "initial"]
+      return { tools: page?.items ?? this._state?.tools ?? [], nextCursor: page?.nextCursor }
     }
 
-    async request(request: { method: string }, schema: { parse: (value: unknown) => unknown }) {
+    async request(
+      request: { method: string; params?: { cursor?: string } },
+      schema: { parse: (value: unknown) => unknown },
+    ) {
       if (this._state) this._state.requestCalls++
-      if (request.method === "tools/list") return schema.parse({ tools: this._state?.tools ?? [] })
+      if (request.method === "tools/list") {
+        const page = this._state?.toolPages?.[request.params?.cursor ?? "initial"]
+        return schema.parse({ tools: page?.items ?? this._state?.tools ?? [], nextCursor: page?.nextCursor })
+      }
       throw new Error(`unsupported request: ${request.method}`)
     }
 
-    async listPrompts() {
+    async listPrompts(params?: { cursor?: string }) {
       if (this._state?.listPromptsShouldFail) {
         throw new Error("listPrompts failed")
       }
-      return { prompts: this._state?.prompts ?? [] }
+      const page = this._state?.promptPages?.[params?.cursor ?? "initial"]
+      return { prompts: page?.items ?? this._state?.prompts ?? [], nextCursor: page?.nextCursor }
     }
 
-    async listResources() {
+    async listResources(params?: { cursor?: string }) {
       if (this._state?.listResourcesShouldFail) {
         throw new Error("listResources failed")
       }
-      return { resources: this._state?.resources ?? [] }
+      const page = this._state?.resourcePages?.[params?.cursor ?? "initial"]
+      return { resources: page?.items ?? this._state?.resources ?? [], nextCursor: page?.nextCursor }
+    }
+
+    async listResourceTemplates(params?: { cursor?: string }) {
+      const page = this._state?.resourceTemplatePages?.[params?.cursor ?? "initial"]
+      return {
+        resourceTemplates: page?.items ?? this._state?.resourceTemplates ?? [],
+        nextCursor: page?.nextCursor,
+      }
+    }
+
+    async callTool(_params: unknown, _schema: unknown, options: unknown) {
+      this._state.callToolOptions = options
+      return { content: [] }
     }
 
     async close() {
@@ -596,6 +625,86 @@ it.instance(
       },
     },
   },
+)
+
+it.instance(
+  "follows cursors when listing tools, prompts, resources, and templates",
+  () =>
+    MCP.Service.use((mcp: MCPNS.Interface) =>
+      Effect.gen(function* () {
+        lastCreatedClientName = "paged-server"
+        const state = getOrCreateClientState("paged-server")
+        state.toolPages = {
+          initial: { items: [{ name: "tool-one", inputSchema: { type: "object" } }], nextCursor: "tools-2" },
+          "tools-2": { items: [{ name: "tool-two", inputSchema: { type: "object" } }] },
+        }
+        state.promptPages = {
+          initial: { items: [{ name: "prompt-one" }], nextCursor: "prompts-2" },
+          "prompts-2": { items: [{ name: "prompt-two" }] },
+        }
+        state.resourcePages = {
+          initial: { items: [{ name: "resource-one", uri: "test://one" }], nextCursor: "resources-2" },
+          "resources-2": { items: [{ name: "resource-two", uri: "test://two" }] },
+        }
+        state.resourceTemplatePages = {
+          initial: { items: [{ name: "template-one", uriTemplate: "test://one/{id}" }], nextCursor: "templates-2" },
+          "templates-2": { items: [{ name: "template-two", uriTemplate: "test://two/{id}" }] },
+        }
+
+        yield* mcp.add("paged-server", { type: "local", command: ["echo", "test"] })
+
+        expect(Object.keys(yield* mcp.tools())).toEqual(["paged-server_tool-one", "paged-server_tool-two"])
+        expect(Object.keys(yield* mcp.prompts())).toEqual(["paged-server:prompt-one", "paged-server:prompt-two"])
+        expect(Object.keys(yield* mcp.resources())).toEqual(["paged-server:resource-one", "paged-server:resource-two"])
+        expect(Object.keys(yield* mcp.resourceTemplates!())).toEqual([
+          "paged-server:template-one",
+          "paged-server:template-two",
+        ])
+      }),
+    ),
+  { config: { mcp: {} } },
+)
+
+it.instance(
+  "rejects repeated tool cursors",
+  () =>
+    MCP.Service.use((mcp: MCPNS.Interface) =>
+      Effect.gen(function* () {
+        lastCreatedClientName = "looping-server"
+        getOrCreateClientState("looping-server").toolPages = {
+          initial: { items: [], nextCursor: "repeat" },
+          repeat: { items: [], nextCursor: "repeat" },
+        }
+
+        const result = yield* mcp.add("looping-server", { type: "local", command: ["echo", "test"] })
+        expect(statusName(result.status, "looping-server")).toBe("failed")
+      }),
+    ),
+  { config: { mcp: {} } },
+)
+
+it.instance(
+  "forwards abort and progress-aware timeout options to tool calls",
+  () =>
+    MCP.Service.use((mcp: MCPNS.Interface) =>
+      Effect.gen(function* () {
+        lastCreatedClientName = "tool-options"
+        const state = getOrCreateClientState("tool-options")
+        yield* mcp.add("tool-options", { type: "local", command: ["echo", "test"], timeout: 123 })
+        const tool = (yield* mcp.tools())["tool-options_test_tool"]
+        const controller = new AbortController()
+
+        yield* Effect.promise(() => tool.execute?.({}, { abortSignal: controller.signal } as never) as Promise<unknown>)
+
+        expect(state.callToolOptions).toMatchObject({
+          resetTimeoutOnProgress: true,
+          signal: controller.signal,
+          timeout: 123,
+        })
+        expect(typeof (state.callToolOptions as { onprogress?: unknown }).onprogress).toBe("function")
+      }),
+    ),
+  { config: { mcp: {} } },
 )
 
 it.instance(

@@ -1,15 +1,19 @@
 import { describe, expect } from "bun:test"
 import { Effect, Fiber, Layer, Schema, Stream } from "effect"
 import { EventV2 } from "@opencode-ai/core/event"
+import { Database } from "@opencode-ai/core/database/database"
+import { EventSequenceTable, EventTable } from "@opencode-ai/core/event/sql"
 import { Location } from "@opencode-ai/core/location"
+import { eq } from "drizzle-orm"
 import { testEffect } from "./lib/effect"
 
 const locationLayer = Layer.succeed(
   Location.Service,
   Location.Service.of({ directory: "project", workspaceID: "workspace" }),
 )
-const it = testEffect(EventV2.layer.pipe(Layer.provideMerge(locationLayer)))
-const itWithoutLocation = testEffect(EventV2.layer)
+const eventLayer = Layer.merge(EventV2.layer, Database.defaultLayer)
+const it = testEffect(eventLayer.pipe(Layer.provideMerge(locationLayer)))
+const itWithoutLocation = testEffect(eventLayer)
 
 const Message = EventV2.define({
   type: "test.message",
@@ -29,6 +33,15 @@ const VersionedMessage = EventV2.define({
   type: "test.versioned",
   version: 2,
   schema: {
+    text: Schema.String,
+  },
+})
+
+const DurableMessage = EventV2.define({
+  type: "test.durable",
+  durable: { version: 1, aggregate: "aggregateID" },
+  schema: {
+    aggregateID: Schema.String,
     text: Schema.String,
   },
 })
@@ -67,6 +80,7 @@ describe("EventV2", () => {
 
       expect(event.type).toBe("test.versioned")
       expect(event.version).toBe(2)
+      expect(event).not.toHaveProperty("durable")
     }),
   )
 
@@ -127,6 +141,86 @@ describe("EventV2", () => {
       yield* Fiber.join(fiber)
 
       expect(received).toEqual([Message.type, "stream"])
+    }),
+  )
+
+  itWithoutLocation.effect("assigns contiguous sequences and reads durable events in order", () =>
+    Effect.gen(function* () {
+      const events = yield* EventV2.Service
+      const { db } = yield* Database.Service
+      const aggregateID = `aggregate-${EventV2.ID.create()}`
+
+      const first = yield* events.publish(DurableMessage, { aggregateID, text: "first" })
+      const second = yield* events.publish(DurableMessage, { aggregateID, text: "second" })
+      const page = yield* EventV2.readAggregate(db, {
+        aggregateID,
+        limit: 10,
+        manifest: {
+          definitions: new Map([[EventV2.versionedType(DurableMessage.type, 1), DurableMessage]]),
+          schema: DurableMessage,
+        },
+      })
+
+      expect([first.durable?.seq, second.durable?.seq]).toEqual([0, 1])
+      expect(page.hasMore).toBeFalse()
+      expect(page.events.map((event) => [event.durable?.seq, event.data.text])).toEqual([
+        [0, "first"],
+        [1, "second"],
+      ])
+    }),
+  )
+
+  itWithoutLocation.effect("serializes concurrent durable publishes into contiguous sequences", () =>
+    Effect.gen(function* () {
+      const events = yield* EventV2.Service
+      const { db } = yield* Database.Service
+      const aggregateID = `aggregate-${EventV2.ID.create()}`
+
+      yield* Effect.forEach(
+        Array.from({ length: 20 }, (_, index) => index),
+        (index) => events.publish(DurableMessage, { aggregateID, text: index.toString() }),
+        { concurrency: "unbounded", discard: true },
+      )
+      const page = yield* EventV2.readAggregate(db, {
+        aggregateID,
+        limit: 20,
+        manifest: {
+          definitions: new Map([[EventV2.versionedType(DurableMessage.type, 1), DurableMessage]]),
+          schema: DurableMessage,
+        },
+      })
+
+      expect(page.events.map((event) => event.durable?.seq)).toEqual(Array.from({ length: 20 }, (_, index) => index))
+    }),
+  )
+
+  itWithoutLocation.effect("rolls back the event, sequence, and commit callback writes atomically", () =>
+    Effect.gen(function* () {
+      const events = yield* EventV2.Service
+      const { db } = yield* Database.Service
+      const aggregateID = `aggregate-${EventV2.ID.create()}`
+      yield* db.run("CREATE TABLE IF NOT EXISTS event_commit_probe (value text NOT NULL)")
+      yield* db.run("DELETE FROM event_commit_probe")
+
+      const exit = yield* events
+        .publish(
+          DurableMessage,
+          { aggregateID, text: "rollback" },
+          {
+            commit: () =>
+              db
+                .run("INSERT INTO event_commit_probe (value) VALUES ('written')")
+                .pipe(Effect.orDie, Effect.andThen(Effect.die("stop"))),
+          },
+        )
+        .pipe(Effect.exit)
+
+      expect(String(exit)).toContain("stop")
+      expect(yield* db.all("SELECT value FROM event_commit_probe")).toEqual([])
+      expect(yield* db.select().from(EventTable).where(eq(EventTable.aggregate_id, aggregateID)).all()).toEqual([])
+      expect(
+        yield* db.select().from(EventSequenceTable).where(eq(EventSequenceTable.aggregate_id, aggregateID)).all(),
+      ).toEqual([])
     }),
   )
 })

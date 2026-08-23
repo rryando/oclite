@@ -126,10 +126,13 @@ function googleVertexEndpoint(location: string) {
 
 type BundledSDK = {
   languageModel(modelId: string): LanguageModelV3
+  chat?: (modelId: string) => LanguageModelV3
+  responses?: (modelId: string) => LanguageModelV3
 }
 
 const BUNDLED_PROVIDERS: Record<string, () => Promise<(opts: any) => BundledSDK>> = {
   "@ai-sdk/amazon-bedrock": () => import("@ai-sdk/amazon-bedrock").then((m) => m.createAmazonBedrock),
+  "@ai-sdk/amazon-bedrock/mantle": () => import("@ai-sdk/amazon-bedrock/mantle").then((m) => m.createBedrockMantle),
   "@ai-sdk/anthropic": () => import("@ai-sdk/anthropic").then((m) => m.createAnthropic),
   "@ai-sdk/azure": () => import("@ai-sdk/azure").then((m) => m.createAzure),
   "@ai-sdk/google": () => import("@ai-sdk/google").then((m) => m.createGoogleGenerativeAI),
@@ -184,6 +187,12 @@ function selectAzureLanguageModel(sdk: any, modelID: string, useChat: boolean) {
   if (sdk.messages) return sdk.messages(modelID)
   if (sdk.chat) return sdk.chat(modelID)
   return sdk.languageModel(modelID)
+}
+
+function selectBedrockMantleLanguageModel(sdk: BundledSDK, modelID: string) {
+  if (modelID === "openai.gpt-oss-safeguard-20b" || modelID === "openai.gpt-oss-safeguard-120b")
+    return sdk.chat?.(modelID) ?? sdk.languageModel(modelID)
+  return sdk.responses?.(modelID) ?? sdk.languageModel(modelID)
 }
 
 function custom(dep: CustomDep): Record<string, CustomLoader> {
@@ -289,7 +298,7 @@ function custom(dep: CustomDep): Record<string, CustomLoader> {
         },
       }
     }),
-    "azure-cognitive-services": Effect.fnUntraced(function* () {
+    "azure-cognitive-services": Effect.fnUntraced(function* (provider: Info) {
       const resourceName = yield* dep.get("AZURE_COGNITIVE_SERVICES_RESOURCE_NAME")
       return {
         autoload: false,
@@ -297,7 +306,9 @@ function custom(dep: CustomDep): Record<string, CustomLoader> {
           return selectAzureLanguageModel(sdk, modelID, Boolean(options?.["useCompletionUrls"]))
         },
         options: {
-          baseURL: resourceName ? `https://${resourceName}.cognitiveservices.azure.com/openai` : undefined,
+          baseURL: resourceName
+            ? `https://${resourceName}.cognitiveservices.azure.com/openai${provider.options?.useDeploymentBasedUrls ? "" : "/v1"}`
+            : undefined,
         },
       }
     }),
@@ -363,7 +374,9 @@ function custom(dep: CustomDep): Record<string, CustomLoader> {
       return {
         autoload: true,
         options: providerOptions,
-        async getModel(sdk: any, modelID: string, options?: Record<string, any>) {
+        async getModel(sdk: any, modelID: string, options?: Record<string, any>, model?: Model) {
+          if (model?.api.npm === "@ai-sdk/amazon-bedrock/mantle") return selectBedrockMantleLanguageModel(sdk, modelID)
+
           // Skip region prefixing if model already has a cross-region inference profile prefix
           // Models from models.dev may already include prefixes like us., eu., global., etc.
           const crossRegionPrefixes = ["global.", "us.", "eu.", "jp.", "apac.", "au."]
@@ -1181,14 +1194,7 @@ export function fromModelsDevProvider(provider: ModelsDev.Provider): Info {
         id: ModelID.make(id),
         name: `${model.name} ${mode[0].toUpperCase()}${mode.slice(1)}`,
         cost: opts.cost ? mergeDeep(base.cost, cost(opts.cost)) : base.cost,
-        options: opts.provider?.body
-          ? Object.fromEntries(
-              Object.entries(opts.provider.body).map(([k, v]) => [
-                k.replace(/_([a-z])/g, (_, c) => c.toUpperCase()),
-                v,
-              ]),
-            )
-          : base.options,
+        options: modeOptions(base, opts.provider?.body),
         headers: opts.provider?.headers ?? base.headers,
       }
     }
@@ -1201,6 +1207,17 @@ export function fromModelsDevProvider(provider: ModelsDev.Provider): Info {
     options: {},
     models,
   }
+}
+
+function modeOptions(model: Model, body: Record<string, unknown> | undefined) {
+  if (!body) return model.options
+  const options = Object.fromEntries(
+    Object.entries(body).map(([key, value]) => [key.replace(/_([a-z])/g, (_, char) => char.toUpperCase()), value]),
+  )
+  const reasoning = body.reasoning
+  if (model.api.npm !== "@ai-sdk/openai" || !isRecord(reasoning) || typeof reasoning.mode !== "string") return options
+  const { reasoning: _, ...rest } = options
+  return { ...rest, reasoningMode: reasoning.mode }
 }
 
 function suggestionModelIDs(provider: Info | undefined, enableExperimentalModels: boolean) {
@@ -1686,7 +1703,9 @@ export const layer = Layer.effect(
 
           // Strip openai itemId metadata following what codex does
           if (
-            (model.api.npm === "@ai-sdk/openai" || model.api.npm === "@ai-sdk/azure") &&
+            (model.api.npm === "@ai-sdk/openai" ||
+              model.api.npm === "@ai-sdk/azure" ||
+              model.api.npm === "@ai-sdk/amazon-bedrock/mantle") &&
             opts.body &&
             opts.method === "POST"
           ) {

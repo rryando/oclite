@@ -69,7 +69,7 @@ describe("ProviderTransform.options - setCacheKey", () => {
     expect(result.promptCacheKey).toBeUndefined()
   })
 
-  test("should set promptCacheKey for openai provider regardless of setCacheKey", () => {
+  test("should set promptCacheKey for openai provider by default", () => {
     const openaiModel = {
       ...mockModel,
       providerID: "openai",
@@ -81,6 +81,56 @@ describe("ProviderTransform.options - setCacheKey", () => {
     }
     const result = ProviderTransform.options({ model: openaiModel, sessionID, providerOptions: {} })
     expect(result.promptCacheKey).toBe(sessionID)
+  })
+
+  test("should not set promptCacheKey for openai when explicitly disabled", () => {
+    const openaiModel = {
+      ...mockModel,
+      providerID: "openai",
+      api: {
+        id: "gpt-4",
+        url: "https://api.openai.com",
+        npm: "@ai-sdk/openai",
+      },
+    }
+    const result = ProviderTransform.options({
+      model: openaiModel,
+      sessionID,
+      providerOptions: { setCacheKey: false },
+    })
+    expect(result.promptCacheKey).toBeUndefined()
+  })
+
+  test("should set promptCacheKey for the xAI SDK by default regardless of provider ID", () => {
+    const xaiModel = {
+      ...mockModel,
+      providerID: "custom-xai",
+      api: {
+        id: "grok-4",
+        url: "https://api.x.ai",
+        npm: "@ai-sdk/xai",
+      },
+    }
+    const result = ProviderTransform.options({ model: xaiModel, sessionID, providerOptions: {} })
+    expect(result.promptCacheKey).toBe(sessionID)
+  })
+
+  test("should not set promptCacheKey for the xAI SDK when explicitly disabled", () => {
+    const xaiModel = {
+      ...mockModel,
+      providerID: "xai",
+      api: {
+        id: "grok-4",
+        url: "https://api.x.ai",
+        npm: "@ai-sdk/xai",
+      },
+    }
+    const result = ProviderTransform.options({
+      model: xaiModel,
+      sessionID,
+      providerOptions: { setCacheKey: false },
+    })
+    expect(result.promptCacheKey).toBeUndefined()
   })
 
   test("should set store=false for openai provider", () => {
@@ -272,6 +322,26 @@ describe("ProviderTransform.options - gpt-5 textVerbosity", () => {
     const result = ProviderTransform.options({ model, sessionID, providerOptions: {} })
     expect(result.textVerbosity).toBe("low")
     expect(result.include).toEqual(["reasoning.encrypted_content"])
+  })
+
+  test("Bedrock Mantle gpt-5.5 uses OpenAI Responses defaults", () => {
+    const model = {
+      ...createGpt5Model("openai.gpt-5.5"),
+      id: "amazon-bedrock/openai.gpt-5.5",
+      providerID: "amazon-bedrock",
+      api: {
+        id: "openai.gpt-5.5",
+        url: "https://bedrock-mantle.us-east-2.api.aws/openai/v1",
+        npm: "@ai-sdk/amazon-bedrock/mantle",
+      },
+    }
+    expect(ProviderTransform.options({ model, sessionID, providerOptions: {} })).toMatchObject({
+      store: false,
+      reasoningEffort: "medium",
+      reasoningSummary: "auto",
+      include: ["reasoning.encrypted_content"],
+      textVerbosity: "low",
+    })
   })
 
   test("gpt-5.1 should have textVerbosity set to low", () => {
@@ -499,6 +569,20 @@ describe("ProviderTransform.providerOptions", () => {
     })
   })
 
+  test("maps Bedrock Mantle provider options to OpenAI namespace", () => {
+    const model = createModel({
+      providerID: "amazon-bedrock",
+      api: {
+        id: "openai.gpt-5.5",
+        url: "https://bedrock-mantle.us-east-2.api.aws/openai/v1",
+        npm: "@ai-sdk/amazon-bedrock/mantle",
+      },
+    })
+    expect(ProviderTransform.providerOptions(model, { reasoningEffort: "medium" })).toEqual({
+      openai: { forceReasoning: true, reasoningEffort: "medium" },
+    })
+  })
+
   test("forces OpenAI-family reasoning when supported or explicitly configured", () => {
     expect(ProviderTransform.providerOptions(createModel(), { store: false })).toEqual({
       openai: { forceReasoning: true, store: false },
@@ -513,6 +597,13 @@ describe("ProviderTransform.providerOptions", () => {
       openai: { forceReasoning: true, reasoningEffort: "high" },
       azure: { forceReasoning: true, reasoningEffort: "high" },
     })
+
+    expect(
+      ProviderTransform.providerOptions(
+        createModel({ capabilities: { ...createModel().capabilities, reasoning: false } }),
+        { reasoningMode: "pro" },
+      ),
+    ).toEqual({ openai: { forceReasoning: true, reasoningMode: "pro" } })
   })
 
   test("uses gateway model provider slug for gateway models", () => {
@@ -3269,6 +3360,29 @@ describe("ProviderTransform.variants", () => {
       })
       const result = ProviderTransform.variants(model)
       expect(Object.keys(result)).toEqual(["low", "medium", "high"])
+    })
+  })
+
+  describe("@ai-sdk/amazon-bedrock/mantle", () => {
+    test("uses OpenAI-style reasoning variants", () => {
+      const result = ProviderTransform.variants(
+        createMockModel({
+          id: "openai.gpt-5.5",
+          providerID: "amazon-bedrock",
+          api: {
+            id: "openai.gpt-5.5",
+            url: "https://bedrock-mantle.us-east-2.api.aws/openai/v1",
+            npm: "@ai-sdk/amazon-bedrock/mantle",
+          },
+          release_date: "2026-04-23",
+        }),
+      )
+      expect(Object.keys(result)).toEqual(["none", "low", "medium", "high", "xhigh"])
+      expect(result.medium).toEqual({
+        reasoningEffort: "medium",
+        reasoningSummary: "auto",
+        include: ["reasoning.encrypted_content"],
+      })
     })
   })
 

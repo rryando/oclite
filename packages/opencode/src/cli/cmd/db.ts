@@ -1,6 +1,6 @@
 import type { Argv } from "yargs"
 import { spawn } from "child_process"
-import { Database } from "@/storage/db"
+import { Database } from "@/storage/database"
 import { drizzle } from "drizzle-orm/bun-sqlite"
 import { Database as BunDatabase } from "bun:sqlite"
 import { UI } from "../ui"

@@ -6,6 +6,7 @@ import { ModelV2 } from "./model"
 import { PermissionV2 } from "./permission"
 import { PluginV2 } from "./plugin"
 import { ProviderV2 } from "./provider"
+import { makeLocationNode } from "./effect/app-node"
 
 export const ID = Schema.String.pipe(Schema.brand("AgentV2.ID"))
 export type ID = typeof ID.Type
@@ -27,6 +28,11 @@ export const Info = Schema.Struct({
 }).annotate({ identifier: "AgentV2.Info" })
 export type Info = typeof Info.Type
 
+export interface Selection {
+  readonly id: ID
+  readonly info: (Info & { readonly permissions: PermissionV2.Ruleset }) | undefined
+}
+
 export class NotFoundError extends Schema.TaggedErrorClass<NotFoundError>()("AgentV2.NotFound", {
   agent: ID,
 }) {}
@@ -46,6 +52,7 @@ export interface Interface {
   readonly defaultInfo: () => Effect.Effect<Info, InvalidDefaultError | NoDefaultError>
   readonly defaultAgent: () => Effect.Effect<ID, InvalidDefaultError | NoDefaultError>
   readonly setDefault: (agent: ID) => Effect.Effect<void, NotFoundError>
+  readonly select: (agent?: ID | string) => Effect.Effect<Selection>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/v2/Agent") {}
@@ -138,6 +145,18 @@ export const layer = Layer.effect(
         yield* result.get(agent)
         defaultAgent = agent
       }),
+      select: Effect.fn("AgentV2.select")(function* (agent) {
+        if (agent !== undefined) {
+          const id = ID.make(agent)
+          const info = Option.getOrUndefined(HashMap.get(agents, id))
+          return { id, info: info ? Object.assign(info, { permissions: info.permission }) : undefined }
+        }
+        const info = yield* result.defaultInfo().pipe(Effect.catch(() => Effect.succeed(undefined)))
+        return {
+          id: info?.name ?? ID.make("build"),
+          info: info ? Object.assign(info, { permissions: info.permission }) : undefined,
+        }
+      }),
     }
 
     return Service.of(result)
@@ -145,3 +164,4 @@ export const layer = Layer.effect(
 )
 
 export const defaultLayer = layer.pipe(Layer.provide(PluginV2.defaultLayer))
+export const node = makeLocationNode({ service: Service, layer, deps: [PluginV2.node] })

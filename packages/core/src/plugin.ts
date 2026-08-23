@@ -2,10 +2,12 @@ export * as PluginV2 from "./plugin"
 
 import { createDraft, finishDraft, type Draft } from "immer"
 import type { LanguageModelV3 } from "@ai-sdk/provider"
+import type { ToolOutput } from "@opencode-ai/llm"
 import { Context, Effect, Exit, Layer, PubSub, Schema, Scope, Stream } from "effect"
 import type { ModelV2 } from "./model"
 import type { AgentV2 } from "./agent"
 import type { Catalog } from "./catalog"
+import { makeLocationNode } from "./effect/app-node"
 
 export const ID = Schema.String.pipe(Schema.brand("Plugin.ID"))
 export type ID = typeof ID.Type
@@ -63,6 +65,23 @@ type HookSpec = {
     output: {
       agent?: AgentV2.ID
     }
+  }
+  "tool.execute.before": {
+    input: {
+      tool: string
+      sessionID: import("./session/schema").SessionSchema.ID
+      callID: string
+    }
+    output: { args: unknown }
+  }
+  "tool.execute.after": {
+    input: {
+      tool: string
+      sessionID: import("./session/schema").SessionSchema.ID
+      callID: string
+      args: unknown
+    }
+    output: { output: ToolOutput }
   }
 }
 
@@ -186,6 +205,7 @@ export const layer = Layer.effect(
 )
 
 export const defaultLayer = layer
+export const node = makeLocationNode({ service: Service, layer, deps: [] })
 
 // opencode
 // sdcok

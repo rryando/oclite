@@ -4,14 +4,15 @@ import { ConfigPermission } from "@/config/permission"
 import { InstanceState } from "@/effect/instance-state"
 import { ProjectID } from "@/project/schema"
 import { MessageID, SessionID } from "@/session/schema"
-import { PermissionTable } from "@/session/session.sql"
-import { Database } from "@/storage/db"
+import { PermissionTable } from "@opencode-ai/core/permission/sql"
+import { Database } from "@/storage/database"
 import { eq } from "drizzle-orm"
 import * as Log from "@opencode-ai/core/util/log"
 import { Wildcard } from "@opencode-ai/core/util/wildcard"
 import { Deferred, Effect, Layer, Schema, Context } from "effect"
 import os from "os"
 import { PermissionV2 } from "@opencode-ai/core/permission"
+import { ProjectV2 } from "@opencode-ai/core/project"
 import { PermissionID } from "./schema"
 
 const log = Log.create({ service: "permission" })
@@ -147,12 +148,16 @@ export const layer = Layer.effect(
     const bus = yield* Bus.Service
     const state = yield* InstanceState.make<State>(
       Effect.fn("Permission.state")(function* (ctx) {
-        const row = Database.use((db) =>
-          db.select().from(PermissionTable).where(eq(PermissionTable.project_id, ctx.project.id)).get(),
+        const rows = Database.use((db) =>
+          db
+            .select()
+            .from(PermissionTable)
+            .where(eq(PermissionTable.project_id, ProjectV2.ID.make(ctx.project.id)))
+            .all(),
         )
         const state = {
           pending: new Map<PermissionID, PendingEntry>(),
-          approved: [...(row?.data ?? [])],
+          approved: rows.map((row) => ({ permission: row.action, pattern: row.resource, action: "allow" as const })),
         }
 
         yield* Effect.addFinalizer(() =>

@@ -65,7 +65,8 @@ export type ToolFileSource = Schema.Schema.Type<typeof ToolFileSource>
 
 export class ToolFileContent extends Schema.Class<ToolFileContent>("Tool.FileContent")({
   type: Schema.Literal("file"),
-  source: ToolFileSource,
+  source: Schema.optional(ToolFileSource),
+  uri: Schema.optional(Schema.String),
   mime: Schema.String,
   name: Schema.optional(Schema.String),
 }) {}
@@ -153,7 +154,7 @@ export const ToolOutput = Object.assign(
       content: content.map((item) =>
         item.type === "text"
           ? toolText({ type: "text", text: item.text })
-          : toolFile({ type: "file", source: item.source, mime: item.mime, name: item.name }),
+          : toolFile({ type: "file", source: item.source, uri: item.uri, mime: item.mime, name: item.name }),
       ),
     }),
     fromResultValue: (result: ToolResultValue): ToolOutput | undefined => {
@@ -184,19 +185,22 @@ export const ToolOutput = Object.assign(
       if (output.content.length === 0) return { type: "json", value: output.structured }
       if (output.content.length === 1 && output.content[0]?.type === "text")
         return { type: "text", value: output.content[0].text }
-      const unsupported = output.content.find((item) => item.type === "file" && item.source.type !== "data")
+      const unsupported = output.content.find(
+        (item) => item.type === "file" && item.source !== undefined && item.source.type !== "data",
+      )
       if (unsupported?.type === "file")
         return {
           type: "error",
-          value: `Tool file source "${unsupported.source.type}" must be materialized to inline data before provider conversion`,
+          value: `Tool file source "${unsupported.source!.type}" must be materialized to inline data before provider conversion`,
         }
       return {
         type: "content",
         value: output.content.map((item) => {
           if (item.type === "text") return { type: "text", text: item.text }
-          if (item.source.type !== "data")
-            throw new Error("Unmaterialized tool file source reached provider conversion")
-          return { type: "media", mediaType: item.mime, data: item.source.data, filename: item.name }
+          const source = item.source ?? (item.uri ? toolFileSourceFromUri(item.uri) : undefined)
+          if (!source) throw new Error("Tool file content requires source or uri")
+          if (source.type !== "data") throw new Error("Unmaterialized tool file source reached provider conversion")
+          return { type: "media", mediaType: item.mime, data: source.data, filename: item.name }
         }),
       }
     },
@@ -292,6 +296,8 @@ export namespace Message {
 
   export const assistant = (content: ContentInput) => make({ role: "assistant", content })
 
+  export const system = (content: string | TextPart | ReadonlyArray<TextPart>) => make({ role: "system", content })
+
   export const tool = (result: ToolResultPart | Parameters<typeof ToolResultPart.make>[0]) =>
     make({ role: "tool", content: ["type" in result ? result : ToolResultPart.make(result)] })
 }
@@ -300,6 +306,7 @@ export class ToolDefinition extends Schema.Class<ToolDefinition>("LLM.ToolDefini
   name: Schema.String,
   description: Schema.String,
   inputSchema: JsonSchema,
+  outputSchema: Schema.optional(JsonSchema),
   cache: Schema.optional(CacheHint),
   metadata: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
   native: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),

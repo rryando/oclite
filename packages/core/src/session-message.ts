@@ -41,6 +41,12 @@ export class User extends Schema.Class<User>("Session.Message.User")({
   }),
 }) {}
 
+export class System extends Schema.Class<System>("Session.Message.System")({
+  ...Base,
+  type: Schema.Literal("system"),
+  text: SessionEvent.ContextUpdated.data.fields.text,
+}) {}
+
 export class Synthetic extends Schema.Class<Synthetic>("Session.Message.Synthetic")({
   ...Base,
   sessionID: SessionEvent.Synthetic.data.fields.sessionID,
@@ -162,7 +168,16 @@ export class Compaction extends Schema.Class<Compaction>("Session.Message.Compac
   ...Base,
 }) {}
 
-export const Message = Schema.Union([AgentSwitched, ModelSwitched, User, Synthetic, Shell, Assistant, Compaction])
+export const Message = Schema.Union([
+  AgentSwitched,
+  ModelSwitched,
+  User,
+  System,
+  Synthetic,
+  Shell,
+  Assistant,
+  Compaction,
+])
   .pipe(Schema.toTaggedUnion("type"))
   .annotate({ identifier: "Session.Message" })
 
